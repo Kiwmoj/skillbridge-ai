@@ -39,6 +39,8 @@ class GeminiCredentialTests(unittest.TestCase):
         class SecureBackend:
             priority = 1
 
+        SecureBackend.__module__ = "keyring.backends.Windows"
+
         fake_keyring = types.SimpleNamespace(
             get_keyring=lambda: SecureBackend(),
             set_password=lambda service, username, value: saved.update({(service, username): value}),

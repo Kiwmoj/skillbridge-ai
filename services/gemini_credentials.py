@@ -8,6 +8,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 KEYRING_SERVICE = "SkillBridge AI"
 KEYRING_USERNAME = "gemini-api-key"
+SECURE_BACKEND_PREFIXES = (
+    "keyring.backends.Windows",
+    "keyring.backends.macOS",
+    "keyring.backends.SecretService",
+    "keyring.backends.kwallet",
+    "keyring.backends.libsecret",
+)
 
 
 class CredentialStorageError(RuntimeError):
@@ -57,7 +64,9 @@ def save_gemini_api_key(value: str) -> None:
         import keyring
         backend = keyring.get_keyring()
         priority = getattr(backend, "priority", 0)
-        if not isinstance(priority, (int, float)) or priority <= 0:
+        backend_module = type(backend).__module__
+        if (not isinstance(priority, (int, float)) or priority <= 0
+                or not backend_module.startswith(SECURE_BACKEND_PREFIXES)):
             raise CredentialStorageError(
                 "The system secure credential store is unavailable. Configure GEMINI_API_KEY or GOOGLE_API_KEY in your environment instead."
             )
