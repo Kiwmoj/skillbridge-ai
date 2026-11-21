@@ -38,7 +38,7 @@ Identify skills relevant to this profession, state whether each came from the st
         return result
 
     def generate_projects(self, profile: dict[str, Any], skills: list[dict[str, Any]], completed_projects: list[dict[str, Any]], reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        prompt = f"""Generate two practical project or work-sample ideas using this student's actual profile, career, experience, and self-reported skills.
+        prompt = f"""Generate two practical project or work-sample ideas using this student's actual profile, career, experience, and self-reported skills. Include concrete learning objectives, accessible materials or tools, and ordered development stages for each project.
 Student profile: {json.dumps(profile, ensure_ascii=False)}
 Skills and self-ratings: {json.dumps(skills, ensure_ascii=False)}
 Previously completed projects: {json.dumps(completed_projects, ensure_ascii=False)}

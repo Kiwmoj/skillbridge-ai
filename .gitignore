@@ -4,8 +4,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
-data/*.sqlite3
-data/*.sqlite3-shm
-data/*.sqlite3-wal
+backend/.env
+data/
 skillbridge.log
 work/
+outputs/

@@ -12,6 +12,16 @@ class Profile:
     industry: str = "Other / custom"
     education_level: str = ""
     existing_skills: list[str] | None = None
+    age_range: str = ""
+    institution: str = ""
+    country: str = ""
+    region: str = ""
+    career_interests: list[str] | None = None
+    areas_to_improve: list[str] | None = None
+    learning_preferences: str = ""
+    weekly_availability: str = ""
+    short_term_goal: str = ""
+    long_term_goal: str = ""
 
 
 @dataclass
@@ -38,6 +48,8 @@ class Activity:
     rationale: str = ""
     career_goal: str = ""
     learning_objective: str = ""
+    notes: str = ""
+    sort_order: int = 0
 
 
 @dataclass

@@ -41,7 +41,12 @@ class Database:
                     career_goal TEXT NOT NULL DEFAULT '', experience TEXT NOT NULL DEFAULT '',
                     interests TEXT NOT NULL DEFAULT '[]', demo_mode INTEGER NOT NULL DEFAULT 0,
                     industry TEXT NOT NULL DEFAULT 'Other / custom', education_level TEXT NOT NULL DEFAULT '',
-                    existing_skills TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    existing_skills TEXT NOT NULL DEFAULT '[]', age_range TEXT NOT NULL DEFAULT '',
+                    institution TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '',
+                    career_interests TEXT NOT NULL DEFAULT '[]', areas_to_improve TEXT NOT NULL DEFAULT '[]',
+                    learning_preferences TEXT NOT NULL DEFAULT '', weekly_availability TEXT NOT NULL DEFAULT '',
+                    short_term_goal TEXT NOT NULL DEFAULT '', long_term_goal TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS skills (
                     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, proficiency INTEGER,
@@ -53,6 +58,7 @@ class Database:
                     description TEXT NOT NULL, skills TEXT NOT NULL DEFAULT '[]', duration TEXT NOT NULL,
                     difficulty TEXT NOT NULL, outcome TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Planned',
                     rationale TEXT NOT NULL DEFAULT '', career_goal TEXT NOT NULL, learning_objective TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS projects (
@@ -83,8 +89,8 @@ class Database:
     @staticmethod
     def _migrate_columns(con: sqlite3.Connection) -> None:
         additions = {
-            "profiles": {"industry": "TEXT NOT NULL DEFAULT 'Other / custom'", "education_level": "TEXT NOT NULL DEFAULT ''", "existing_skills": "TEXT NOT NULL DEFAULT '[]'", "demo_mode": "INTEGER NOT NULL DEFAULT 0"},
-            "activities": {"career_goal": "TEXT NOT NULL DEFAULT ''", "learning_objective": "TEXT NOT NULL DEFAULT ''"},
+            "profiles": {"industry": "TEXT NOT NULL DEFAULT 'Other / custom'", "education_level": "TEXT NOT NULL DEFAULT ''", "existing_skills": "TEXT NOT NULL DEFAULT '[]'", "demo_mode": "INTEGER NOT NULL DEFAULT 0", "age_range": "TEXT NOT NULL DEFAULT ''", "institution": "TEXT NOT NULL DEFAULT ''", "country": "TEXT NOT NULL DEFAULT ''", "region": "TEXT NOT NULL DEFAULT ''", "career_interests": "TEXT NOT NULL DEFAULT '[]'", "areas_to_improve": "TEXT NOT NULL DEFAULT '[]'", "learning_preferences": "TEXT NOT NULL DEFAULT ''", "weekly_availability": "TEXT NOT NULL DEFAULT ''", "short_term_goal": "TEXT NOT NULL DEFAULT ''", "long_term_goal": "TEXT NOT NULL DEFAULT ''"},
+            "activities": {"career_goal": "TEXT NOT NULL DEFAULT ''", "learning_objective": "TEXT NOT NULL DEFAULT ''", "notes": "TEXT NOT NULL DEFAULT ''", "sort_order": "INTEGER NOT NULL DEFAULT 0"},
             "projects": {"details": "TEXT NOT NULL DEFAULT '{}'"},
             "reviews": {"career_goal": "TEXT NOT NULL DEFAULT ''"},
             "skills": {"exercise": "TEXT NOT NULL DEFAULT ''"},
@@ -94,6 +100,13 @@ class Database:
             for name, definition in columns.items():
                 if name not in existing:
                     con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        ordered = con.execute("SELECT id,career_goal,stage FROM activities ORDER BY career_goal,stage,sort_order,id").fetchall()
+        positions: dict[tuple[str, str], int] = {}
+        for activity in ordered:
+            key = (activity["career_goal"], activity["stage"])
+            position = positions.get(key, 0)
+            con.execute("UPDATE activities SET sort_order=? WHERE id=?", (position, activity["id"]))
+            positions[key] = position + 1
         # Lift earlier profile-scoped records onto the original career before any picker changes it.
         profile = con.execute("SELECT career_goal FROM profiles WHERE id=1").fetchone()
         if profile:
@@ -119,4 +132,218 @@ class Database:
         row = con.execute("SELECT * FROM profiles WHERE id=1").fetchone()
         if not row or row["name"] != "Alex Morgan" or not row["demo_mode"]:
             return
-◊ù¥∂âûÀk∫wµÁp¸§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ=8Å=91%P°çÖ…ïï…}ùΩÖ∞±πÖµî§Å<ÅUAQÅMPÅ¡…Ωô•ç•ïπç‰ıï·ç±’ëïêπ¡…Ωô•ç•ïπç‰±—Ö…ùï–ıï·ç±’ëïêπ—Ö…ùï–∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•µ¡Ω…—Öπçîıï·ç±’ëïêπ•µ¡Ω…—Öπçî±ï·¡±ÖπÖ—•Ω∏ıï·ç±’ëïêπï·¡±ÖπÖ—•Ω∏±ï·ï…ç•Õîıï·ç±’ëïêπï·ï…ç•Õî±’¡ëÖ—ïë}Ö–ıUII9Q}Q%5MQ5@ààà∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ°çÖ…ïï…}ùΩÖ∞±ç±ïÖπ}πÖµî±…Ö—•πú°¡…Ωô•ç•ïπç‰§±…Ö—•πú°—Ö…ùï–§±•µ¡Ω…—Öπçî±ï·¡±ÖπÖ—•Ω∏±ï·ï…ç•Õî§§(ÄÄÄÄÄÄÄÄÄÄÄÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâM≠•±∞ÅÖÕÕïÕÕµïπ–Å’¡ëÖ—ïêÅÅÌçÖ…ïï…}ùΩÖ±ÙÅÅÌç±ïÖπ}πÖµïÙà§((ÄÄÄÅëïòÅùï—}Öç—•Ÿ•—•ïÃ°Õï±ò∞ÅçÖ…ïï…}ùΩÖ∞ËÅÕ—»ÅÅ9ΩπîÄÙÅ9Ωπî§Ä¥¯Å±•Õ—mç—•Ÿ•—ÂtË(ÄÄÄÄÄÄÄÅçÖ…ïï…}ùΩÖ∞ÄÙÅçÖ…ïï…}ùΩÖ∞ÅΩ»ÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ•òÅπΩ–ÅçÖ…ïï…}ùΩÖ∞ËÅ…ï—’…∏Åmt(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅ…Ω›ÃÄÙÅçΩ∏πï·ïç’—î†âM1PÄ®ÅI=4ÅÖç—•Ÿ•—•ïÃÅ]!IÅçÖ…ïï…}ùΩÖ∞Ù¸Å=IHÅ	dÅMÅÕ—ÖùîÅ]!8Äù	ïù•ππï»úÅQ!8ÄƒÅ]!8Äù%π—ï…µïë•Ö—îúÅQ!8Ä»Å1MÄÃÅ9±•êà∞Ä°çÖ…ïï…}ùΩÖ∞∞§§πôï—ç°Ö±∞†§(ÄÄÄÄÄÄÄÅ…ï—’…∏Åmç—•Ÿ•—‰°…lâ•êât±…lâÕ—Öùîât±…lâ—•—±îât±…lâëïÕç…•¡—•Ω∏ât±©ÕΩ∏π±ΩÖëÃ°…lâÕ≠•±±Ãât§±…lâë’…Ö—•Ω∏ât±…lâë•ôô•ç’±—‰ât±…lâΩ’—çΩµîât±…lâÕ—Ö—’Ãât±…lâ…Ö—•ΩπÖ±îât±…lâçÖ…ïï…}ùΩÖ∞ât±…lâ±ïÖ…π•πù}Ωâ©ïç—•Ÿîât§ÅôΩ»Å»Å•∏Å…Ω›Õt((ÄÄÄÅëïòÅ’¡ëÖ—ï}Öç—•Ÿ•—Â}Õ—Ö—’Ã°Õï±ò∞ÅÖç—•Ÿ•—Â}•êËÅ•π–∞ÅÕ—Ö—’ÃËÅÕ—»§Ä¥¯Å9ΩπîË(ÄÄÄÄÄÄÄÅ•òÅÕ—Ö—’ÃÅπΩ–Å•∏ÅÏâA±Öππïêà∞â%∏Å¡…Ωù…ïÕÃà∞âΩµ¡±ï—ïêâÙËÅ…Ö•ÕîÅYÖ±’ï……Ω»†âUπ≠πΩ›∏ÅÖç—•Ÿ•—‰ÅÕ—Ö—’Ãà§(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅçΩ∏πï·ïç’—î†âUAQÅÖç—•Ÿ•—•ïÃÅMPÅÕ—Ö—’ÃÙ¸Å]!IÅ•êÙ¸à∞Ä°Õ—Ö—’Ã±Öç—•Ÿ•—Â}•ê§§(ÄÄÄÄÄÄÄÄÄÄÄÅ…Ω‹ÄÙÅçΩ∏πï·ïç’—î†âM1PÅ—•—±îÅI=4ÅÖç—•Ÿ•—•ïÃÅ]!IÅ•êÙ¸à∞Ä°Öç—•Ÿ•—Â}•ê∞§§πôï—ç°Ωπî†§(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÅ…Ω‹ËÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâIΩÖëµÖ¿ÅÖç—•Ÿ•—‰ÅÌÕ—Ö—’Ãπ±Ω›ï»†•ÙÅÅÌ…Ω›lù—•—±îùuÙà§((ÄÄÄÅëïòÅÖëë}Öç—•Ÿ•—‰°Õï±ò∞Å•—ï¥ËÅë•ç—mÕ—»∞ÅπÂt§Ä¥¯Å•π–Ë(ÄÄÄÄÄÄÄÅùΩÖ∞ÄÙÅ•—ï¥πùï–†âçÖ…ïï…}ùΩÖ∞à§ÅΩ»ÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅç’»ÄÙÅçΩ∏πï·ïç’—î†ààâ%9MIPÅ%9Q<ÅÖç—•Ÿ•—•ïÃ°Õ—Öùî±—•—±î±ëïÕç…•¡—•Ω∏±Õ≠•±±Ã±ë’…Ö—•Ω∏±ë•ôô•ç’±—‰±Ω’—çΩµî±Õ—Ö—’Ã±…Ö—•ΩπÖ±î±çÖ…ïï…}ùΩÖ∞±±ïÖ…π•πù}Ωâ©ïç—•Ÿî§(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅY1UL†¸∞¸∞¸∞¸∞¸∞¸∞¸∞ùA±Öππïêú∞¸∞¸∞¸§ààà∞Ä°•—ïµlâÕ—Öùîât±•—ïµlâ—•—±îât±•—ïµlâëïÕç…•¡—•Ω∏ât±©ÕΩ∏πë’µ¡Ã°•—ï¥πùï–†âÕ≠•±±Ãà±mt§§∞(ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅ•—ïµlâë’…Ö—•Ω∏ât±•—ïµlâë•ôô•ç’±—‰ât±•—ïµlâΩ’—çΩµîât±•—ï¥πùï–†â…Ö—•ΩπÖ±îà∞àà§±ùΩÖ∞±•—ï¥πùï–†â±ïÖ…π•πù}Ωâ©ïç—•Ÿîà∞àà§§§(ÄÄÄÄÄÄÄÄÄÄÄÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâIΩÖëµÖ¿Å’¡ëÖ—ïêÅÅÌùΩÖ±ÙÅÅÌ•—ïµlù—•—±îùuÙà§(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å•π–°ç’»π±ÖÕ—…Ω›•ê§((ÄÄÄÅëïòÅÖëë}…ïçΩµµïπëÖ—•Ω∏°Õï±ò∞ÅçÖ…ïï…}ùΩÖ∞ËÅÕ—»∞Å•πë’Õ—…‰ËÅÕ—»∞Å≠•πêËÅÕ—»∞ÅçΩπ—ïπ–ËÅπ‰∞ÅÕΩ’…çï}µΩëîËÅÕ—»ÄÙÄâ1%YÅ5%9$ÅA$à§Ä¥¯Å•π–Ë(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅç’»ÄÙÅçΩ∏πï·ïç’—î†â%9MIPÅ%9Q<Å…ïçΩµµïπëÖ—•ΩπÃ°çÖ…ïï…}ùΩÖ∞±•πë’Õ—…‰±≠•πê±ÕΩ’…çï}µΩëî±çΩπ—ïπ–§ÅY1UL†¸∞¸∞¸∞¸∞¸§à∞Ä°çÖ…ïï…}ùΩÖ∞±•πë’Õ—…‰±≠•πê±ÕΩ’…çï}µΩëî±©ÕΩ∏πë’µ¡Ã°çΩπ—ïπ–±ïπÕ’…ï}ÖÕç•§ıÖ±Õî§§§(ÄÄÄÄÄÄÄÄÄÄÄÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâÌ≠•πêπ…ï¡±Öçî†ù|ú∞úÄú§π—•—±î†•ÙÅÕÖŸïêÅÅÌçÖ…ïï…}ùΩÖ±Ùà§(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å•π–°ç’»π±ÖÕ—…Ω›•ê§((ÄÄÄÅëïòÅùï—}…ïçΩµµïπëÖ—•ΩπÃ°Õï±ò∞ÅçÖ…ïï…}ùΩÖ∞ËÅÕ—»ÅÅ9ΩπîÄÙÅ9Ωπî∞Å≠•πêËÅÕ—»ÅÅ9ΩπîÄÙÅ9Ωπî§Ä¥¯Å±•Õ—më•ç—mÕ—»∞ÅπÂutË(ÄÄÄÄÄÄÄÅ≈’ï…‰∞Å¡Ö…ÖµÃÄÙÄâM1PÄ®ÅI=4Å…ïçΩµµïπëÖ—•ΩπÃÅ]!IÄƒÙƒà∞Åmt(ÄÄÄÄÄÄÄÅ•òÅçÖ…ïï…}ùΩÖ∞Å•ÃÅπΩ–Å9ΩπîËÅ≈’ï…‰Ä¨ÙÄàÅ9ÅçÖ…ïï…}ùΩÖ∞Ù¸àÏÅ¡Ö…ÖµÃπÖ¡¡ïπê°çÖ…ïï…}ùΩÖ∞§(ÄÄÄÄÄÄÄÅ•òÅ≠•πêÅ•ÃÅπΩ–Å9ΩπîËÅ≈’ï…‰Ä¨ÙÄàÅ9Å≠•πêÙ¸àÏÅ¡Ö…ÖµÃπÖ¡¡ïπê°≠•πê§(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏ËÅ…Ω›ÃÄÙÅçΩ∏πï·ïç’—î°≈’ï…‰¨àÅ=IHÅ	dÅç…ïÖ—ïë}Ö–ÅM±•êÅMà±¡Ö…ÖµÃ§πôï—ç°Ö±∞†§(ÄÄÄÄÄÄÄÅ…ï—’…∏ÅmÏâ•êàÈ…lâ•êât∞âçÖ…ïï…}ùΩÖ∞àÈ…lâçÖ…ïï…}ùΩÖ∞ât∞â•πë’Õ—…‰àÈ…lâ•πë’Õ—…‰ât∞â≠•πêàÈ…lâ≠•πêât∞âÕΩ’…çï}µΩëîàÈ…lâÕΩ’…çï}µΩëîât∞âçΩπ—ïπ–àÈ©ÕΩ∏π±ΩÖëÃ°…lâçΩπ—ïπ–ât§∞âç…ïÖ—ïë}Ö–àÈ…lâç…ïÖ—ïë}Ö–âuÙÅôΩ»Å»Å•∏Å…Ω›Õt((ÄÄÄÅëïòÅÖëë}¡…Ω©ïç–°Õï±ò∞Å•—ï¥ËÅë•ç—mÕ—»∞ÅπÂt§Ä¥¯Å•π–Ë(ÄÄÄÄÄÄÄÅùΩÖ∞ÄÙÅ•—ï¥πùï–†âçÖ—ïùΩ…‰à§ÅΩ»ÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅç’»ÄÙÅçΩ∏πï·ïç’—î†â%9MIPÅ%9Q<Å¡…Ω©ïç—Ã°—•—±î±ëïÕç…•¡—•Ω∏±çÖ—ïùΩ…‰±ÕΩô—›Ö…î±Õ≠•±±Ã±Õ—Ö—’Ã±•Õ}ëïµº±ëï—Ö•±Ã§ÅY1UL†¸∞¸∞¸∞¸∞¸∞ùMÖŸïêú∞¿∞¸§à∞Ä°•—ïµlâ—•—±îât±•—ïµlâëïÕç…•¡—•Ω∏ât±ùΩÖ∞±•—ï¥πùï–†âÕΩô—›Ö…îà∞àà§±©ÕΩ∏πë’µ¡Ã°•—ï¥πùï–†âÕ≠•±±Ãà±mt§§±©ÕΩ∏πë’µ¡Ã°•—ï¥πùï–†âëï—Ö•±Ãà±ÌÙ§§§§(ÄÄÄÄÄÄÄÄÄÄÄÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâA…Ω©ïç–ÅÕÖŸïêÅÅÌ•—ïµlù—•—±îùuÙà§(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å•π–°ç’»π±ÖÕ—…Ω›•ê§((ÄÄÄÅëïòÅùï—}¡…Ω©ïç—Ã°Õï±ò∞ÅçÖ…ïï…}ùΩÖ∞ËÅÕ—»ÅÅ9ΩπîÄÙÅ9Ωπî§Ä¥¯Å±•Õ—mA…Ω©ïç—tË(ÄÄÄÄÄÄÄÅùΩÖ∞ÄÙÅçÖ…ïï…}ùΩÖ∞ÅΩ»ÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ•òÅπΩ–ÅùΩÖ∞ËÅ…ï—’…∏Åmt(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏ËÅ…Ω›ÃÄÙÅçΩ∏πï·ïç’—î†âM1PÄ®ÅI=4Å¡…Ω©ïç—ÃÅ]!IÅçÖ—ïùΩ…‰Ù¸Å=IHÅ	dÅç…ïÖ—ïë}Ö–ÅM±•êÅMà∞Ä°ùΩÖ∞∞§§πôï—ç°Ö±∞†§(ÄÄÄÄÄÄÄÅ…ï—’…∏ÅmA…Ω©ïç–°…lâ•êât±…lâ—•—±îât±…lâëïÕç…•¡—•Ω∏ât±…lâçÖ—ïùΩ…‰ât±…lâÕΩô—›Ö…îât±©ÕΩ∏π±ΩÖëÃ°…lâÕ≠•±±Ãât§±…lâÕ—Ö—’Ãât±©ÕΩ∏π±ΩÖëÃ°…lâëï—Ö•±Ãât§§ÅôΩ»Å»Å•∏Å…Ω›Õt((ÄÄÄÅëïòÅ’¡ëÖ—ï}¡…Ω©ïç—}Õ—Ö—’Ã°Õï±ò∞Å¡…Ω©ïç—}•êËÅ•π–∞ÅÕ—Ö—’ÃËÅÕ—»§Ä¥¯Å9ΩπîË(ÄÄÄÄÄÄÄÅ•òÅÕ—Ö—’ÃÅπΩ–Å•∏ÅÏâMÖŸïêà∞â%∏Å¡…Ωù…ïÕÃà∞âΩµ¡±ï—ïêâÙËÅ…Ö•ÕîÅYÖ±’ï……Ω»†âUπ≠πΩ›∏Å¡…Ω©ïç–ÅÕ—Ö—’Ãà§(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅçΩ∏πï·ïç’—î†âUAQÅ¡…Ω©ïç—ÃÅMPÅÕ—Ö—’ÃÙ¸Å]!IÅ•êÙ¸à∞Ä°Õ—Ö—’Ã±¡…Ω©ïç—}•ê§§(ÄÄÄÄÄÄÄÄÄÄÄÅ…Ω‹ÄÙÅçΩ∏πï·ïç’—î†âM1PÅ—•—±îÅI=4Å¡…Ω©ïç—ÃÅ]!IÅ•êÙ¸à∞Ä°¡…Ω©ïç—}•ê∞§§πôï—ç°Ωπî†§(ÄÄÄÄÄÄÄÄÄÄÄÅ•òÅ…Ω‹ËÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâA…Ω©ïç–ÅµÖ…≠ïêÅÌÕ—Ö—’Ãπ±Ω›ï»†•ÙÅÅÌ…Ω›lù—•—±îùuÙà§((ÄÄÄÅëïòÅÖëë}…ïŸ•ï‹°Õï±ò∞Å¡…Ω©ïç—}πÖµîËÅÕ—»∞Å•µÖùï}¡Ö—†ËÅÕ—»∞Å…ï¡Ω…–ËÅë•ç—mÕ—»∞ÅπÂt∞ÅçÖ…ïï…}ùΩÖ∞ËÅÕ—»ÅÅ9ΩπîÄÙÅ9Ωπî§Ä¥¯Å•π–Ë(ÄÄÄÄÄÄÄÅùΩÖ∞ÄÙÅçÖ…ïï…}ùΩÖ∞ÅΩ»ÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅç’»ÄÙÅçΩ∏πï·ïç’—î†â%9MIPÅ%9Q<Å…ïŸ•ï›Ã°¡…Ω©ïç—}πÖµî±•µÖùï}¡Ö—†±…ï¡Ω…–±•Õ}ëïµº±çÖ…ïï…}ùΩÖ∞§ÅY1UL†¸∞¸∞¸∞¿∞¸§à∞Ä°¡…Ω©ïç—}πÖµî±•µÖùï}¡Ö—†±©ÕΩ∏πë’µ¡Ã°…ï¡Ω…–±ïπÕ’…ï}ÖÕç•§ıÖ±Õî§±ùΩÖ∞§§(ÄÄÄÄÄÄÄÄÄÄÄÅÕï±òπ}›…•—ï}±Ωú°çΩ∏∞ÅòâAΩ…—ôΩ±•ºÅ…ïŸ•ï‹ÅÕÖŸïêÅÅÌ¡…Ω©ïç—}πÖµïÙà§(ÄÄÄÄÄÄÄÄÄÄÄÅ…ï—’…∏Å•π–°ç’»π±ÖÕ—…Ω›•ê§((ÄÄÄÅëïòÅùï—}…ïŸ•ï›Ã°Õï±ò∞ÅçÖ…ïï…}ùΩÖ∞ËÅÕ—»ÅÅ9ΩπîÄÙÅ9Ωπî§Ä¥¯Å±•Õ—mIïŸ•ï›tË(ÄÄÄÄÄÄÄÅùΩÖ∞ÄÙÅçÖ…ïï…}ùΩÖ∞ÅΩ»ÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ•òÅπΩ–ÅùΩÖ∞ËÅ…ï—’…∏Åmt(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏ËÅ…Ω›ÃÄÙÅçΩ∏πï·ïç’—î†âM1PÄ®ÅI=4Å…ïŸ•ï›ÃÅ]!IÅçÖ…ïï…}ùΩÖ∞Ù¸Å=IHÅ	dÅç…ïÖ—ïë}Ö–ÅM±•êÅMà∞Ä°ùΩÖ∞∞§§πôï—ç°Ö±∞†§(ÄÄÄÄÄÄÄÅ…ï—’…∏ÅmIïŸ•ï‹°…lâ•êât±…lâ¡…Ω©ïç—}πÖµîât±…lâç…ïÖ—ïë}Ö–ât±©ÕΩ∏π±ΩÖëÃ°…lâ…ï¡Ω…–ât§±…lâ•µÖùï}¡Ö—†ât±…lâçÖ…ïï…}ùΩÖ∞ât§ÅôΩ»Å»Å•∏Å…Ω›Õt((ÄÄÄÅëïòÅ±Ωú°Õï±ò∞ÅµïÕÕÖùîËÅÕ—»§Ä¥¯Å9ΩπîË(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏ËÅÕï±òπ}›…•—ï}±Ωú°çΩ∏±µïÕÕÖùî§((ÄÄÄÅëïòÅùï—}…ïçïπ—}Öç—•Ÿ•—‰°Õï±ò∞Å±•µ•–ËÅ•π–ÄÙÄ‡§Ä¥¯Å±•Õ—m—’¡±ïmÕ—»±Õ—…utË(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏ËÅ…Ω›ÃÄÙÅçΩ∏πï·ïç’—î†âM1PÅµïÕÕÖùî±ç…ïÖ—ïë}Ö–ÅI=4ÅÖç—•Ÿ•—Â}±ΩúÅ=IHÅ	dÅ•êÅMÅ1%5%PÄ¸à∞°±•µ•–∞§§πôï—ç°Ö±∞†§(ÄÄÄÄÄÄÄÅ…ï—’…∏Ål°…lâµïÕÕÖùîât±…lâç…ïÖ—ïë}Ö–ât§ÅôΩ»Å»Å•∏Å…Ω›Õt((ÄÄÄÅëïòÅÖπÖ±Â—•çÃ°Õï±ò§Ä¥¯Åë•ç—mÕ—»∞ÅπÂtË(ÄÄÄÄÄÄÄÅùΩÖ∞ÄÙÅÕï±òπùï—}¡…Ωô•±î†§πçÖ…ïï…}ùΩÖ∞(ÄÄÄÄÄÄÄÅ•òÅπΩ–ÅùΩÖ∞ËÅ…ï—’…∏ÅÏâçΩµ¡±ï—ïêàË¿∞â—Ω—Ö∞àË¿∞âÖç—•Ÿï}¡…Ω©ïç—ÃàË¿∞âçΩµ¡±ï—ïë}¡…Ω©ïç—ÃàË¿∞â¡…Ω©ïç—}—Ω—Ö∞àË¿∞â…ïŸ•ï›}çΩ’π–àË¿∞âÕ≠•±±ÃàÈmt∞âÖç—•Ÿ•—•ïÃàÈmt∞â…ïŸ•ï›ÃàÈmuÙ(ÄÄÄÄÄÄÄÅ›•—†ÅÕï±òπçΩππïç–†§ÅÖÃÅçΩ∏Ë(ÄÄÄÄÄÄÄÄÄÄÄÅçΩµ¡±ï—ïêÄÙÅçΩ∏πï·ïç’—î†âM1PÅ=U9P†®§ÅI=4ÅÖç—•Ÿ•—•ïÃÅ]!IÅçÖ…ïï…}ùΩÖ∞Ù¸Å9ÅÕ—Ö—’ÃÙùΩµ¡±ï—ïêúà∞°ùΩÖ∞∞§§πôï—ç°Ωπî†•l¡t(ÄÄÄÄÄÄÄÄÄÄÄÅ—Ω—Ö∞ÄÙÅçΩ∏πï·ïç’—î†âM1PÅ=U9P†®§ÅI=4ÅÖç—•Ÿ•—•ïÃÅ]!IÅçÖ…ïï…}ùΩÖ∞Ù¸à∞°ùΩÖ∞∞§§πôï—ç°Ωπî†•l¡t(ÄÄÄÄÄÄÄÄÄÄÄÅÖç—•ŸîÄÙÅçΩ∏πï·ïç’—î†âM1PÅ=U9P†®§ÅI=4Å¡…Ω©ïç—ÃÅ]!IÅçÖ—ïùΩ…‰Ù¸Å9ÅÕ—Ö—’ÃÑÙùΩµ¡±ï—ïêúà∞°ùΩÖ∞∞§§πôï—ç°Ωπî†•l¡t(ÄÄÄÄÄÄÄÄÄÄÄÅ¡…Ω©ïç—}—Ω—Ö∞ÄÙÅçΩ∏πï·ïç’—î†âM1PÅ=U9P†®§ÅI=4Å¡…Ω©ïç—ÃÅ]!IÅçÖ—ïùΩ…‰Ù¸à∞°ùΩÖ∞∞§§πôï—ç°Ωπî†•l¡t(ÄÄÄÄÄÄÄÄÄÄÄÅçΩµ¡±ï—ïë}¡…Ω©ïç—ÃÄÙÅçΩ∏πï·ïç’—î†âM1PÅ=U9P†®§ÅI=4Å¡…Ω©ïç—ÃÅ]!IÅçÖ—ïùΩ…‰Ù¸Å9ÅÕ—Ö—’ÃÙùΩµ¡±ï—ïêúà∞°ùΩÖ∞∞§§πôï—ç°Ωπî†•l¡t(ÄÄÄÄÄÄÄÄÄÄÄÅ…ïŸ•ï›}çΩ’π–ÄÙÅçΩ∏πï·ïç’—î†âM1PÅ=U9P†®§ÅI=4Å…ïŸ•ï›ÃÅ]!IÅçÖ…ïï…}ùΩÖ∞Ù¸à∞°ùΩÖ∞∞§§πôï—ç°Ωπî†•l¡t(ÄÄÄÄÄÄÄÅ…ï—’…∏ÅÏâçΩµ¡±ï—ïêàÈçΩµ¡±ï—ïê∞â—Ω—Ö∞àÈ—Ω—Ö∞∞âÖç—•Ÿï}¡…Ω©ïç—ÃàÈÖç—•Ÿî∞âçΩµ¡±ï—ïë}¡…Ω©ïç—ÃàÈçΩµ¡±ï—ïë}¡…Ω©ïç—Ã∞â¡…Ω©ïç—}—Ω—Ö∞àÈ¡…Ω©ïç—}—Ω—Ö∞∞â…ïŸ•ï›}çΩ’π–àÈ…ïŸ•ï›}çΩ’π–∞âÕ≠•±±ÃàÈÕï±òπùï—}Õ≠•±±Ã°ùΩÖ∞§∞âÖç—•Ÿ•—•ïÃàÈÕï±òπùï—}Öç—•Ÿ•—•ïÃ°ùΩÖ∞§∞â…ïŸ•ï›ÃàÈÕï±òπùï—}…ïŸ•ï›Ã°ùΩÖ∞•Ù
+        try:
+            interests = json.loads(row["interests"] or "[]")
+        except (ValueError, TypeError):
+            return
+        known_interests = {
+            ("3D character modeling", "Character animation", "Game development", "Animation storytelling"),
+            ("Problem solving", "Creative thinking", "Research"),
+        }
+        if tuple(interests) not in known_interests:
+            return
+        for table in ("activity_log", "recommendations", "reviews", "projects", "activities", "career_skills", "skills", "profiles"):
+            con.execute(f"DELETE FROM {table}")
+
+    @staticmethod
+    def _write_log(con: sqlite3.Connection, message: str) -> None:
+        con.execute("INSERT INTO activity_log(message) VALUES(?)", (message,))
+
+    def has_profile(self) -> bool:
+        with self.connect() as con:
+            row = con.execute("SELECT name,career_goal FROM profiles WHERE id=1").fetchone()
+        return bool(row and row["name"].strip() and row["career_goal"].strip())
+
+    def get_profile(self) -> Profile:
+        with self.connect() as con:
+            row = con.execute("SELECT * FROM profiles WHERE id=1").fetchone()
+        if not row:
+            return Profile("", "", "", [])
+        def load_list(key: str) -> list[str]:
+            try: return json.loads(row[key] or "[]")
+            except (ValueError, TypeError): return []
+        return Profile(name=row["name"], career_goal=row["career_goal"], experience=row["experience"],
+                       interests=load_list("interests"), industry=row["industry"],
+                       education_level=row["education_level"], existing_skills=load_list("existing_skills"),
+                       age_range=row["age_range"], institution=row["institution"], country=row["country"],
+                       region=row["region"], career_interests=load_list("career_interests"),
+                       areas_to_improve=load_list("areas_to_improve"),
+                       learning_preferences=row["learning_preferences"], weekly_availability=row["weekly_availability"],
+                       short_term_goal=row["short_term_goal"], long_term_goal=row["long_term_goal"])
+
+    def save_profile(self, name: str, goal: str, education_level: str, experience: str,
+                     existing_skills: list[str], industry: str = "", interests: list[str] | None = None,
+                     age_range: str = "", institution: str = "", country: str = "", region: str = "",
+                     career_interests: list[str] | None = None, areas_to_improve: list[str] | None = None,
+                     learning_preferences: str = "", weekly_availability: str = "",
+                     short_term_goal: str = "", long_term_goal: str = "") -> None:
+        from services.career_catalog import infer_industry
+        name, goal = name.strip(), goal.strip()
+        if not name or not goal:
+            raise ValueError("Enter your name and a career goal to save your profile.")
+        selected_industry = infer_industry(goal, industry)
+        skill_names = list(dict.fromkeys(s.strip() for s in existing_skills if s.strip()))
+        with self.connect() as con:
+            con.execute("""INSERT INTO profiles(id,name,career_goal,experience,interests,demo_mode,industry,education_level,existing_skills,
+                age_range,institution,country,region,career_interests,areas_to_improve,learning_preferences,weekly_availability,short_term_goal,long_term_goal,updated_at)
+                VALUES(1,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,career_goal=excluded.career_goal,experience=excluded.experience,interests=excluded.interests,
+                demo_mode=0,industry=excluded.industry,education_level=excluded.education_level,existing_skills=excluded.existing_skills,
+                age_range=excluded.age_range,institution=excluded.institution,country=excluded.country,region=excluded.region,
+                career_interests=excluded.career_interests,areas_to_improve=excluded.areas_to_improve,
+                learning_preferences=excluded.learning_preferences,weekly_availability=excluded.weekly_availability,
+                short_term_goal=excluded.short_term_goal,long_term_goal=excluded.long_term_goal,updated_at=CURRENT_TIMESTAMP""",
+                (name, goal, experience, json.dumps(interests or []), selected_industry, education_level, json.dumps(skill_names),
+                 age_range.strip(), institution.strip(), country.strip(), region.strip(),
+                 json.dumps(career_interests or []), json.dumps(areas_to_improve or []), learning_preferences.strip(),
+                 weekly_availability.strip(), short_term_goal.strip(), long_term_goal.strip()))
+            # Preserve existing records under their former career; add only student-entered skills to this career.
+            for skill in skill_names:
+                con.execute("INSERT OR IGNORE INTO career_skills(career_goal,name) VALUES(?,?)", (goal, skill))
+            self._write_log(con, f"Student profile saved | career: {goal}")
+
+    def get_skills(self, career_goal: str | None = None, industry: str | None = None) -> list[Skill]:
+        career_goal = career_goal or self.get_profile().career_goal
+        if not career_goal: return []
+        with self.connect() as con:
+            rows = con.execute("SELECT * FROM career_skills WHERE career_goal=? ORDER BY importance='Essential' DESC,name", (career_goal,)).fetchall()
+        return [Skill(r["name"],r["proficiency"],r["target"],r["importance"],r["explanation"],r["exercise"]) for r in rows]
+
+    def save_skill(self, name: str, proficiency: int | None = None, target: int | None = None,
+                   importance: str = "Student reported", explanation: str = "", exercise: str = "", career_goal: str | None = None) -> None:
+        career_goal = career_goal or self.get_profile().career_goal
+        clean_name = name.strip()
+        if not clean_name or not career_goal: raise ValueError("A career and skill name are required.")
+        def rating(value): return None if value is None else max(0, min(100, int(value)))
+        with self.connect() as con:
+            con.execute("""INSERT INTO career_skills(career_goal,name,proficiency,target,importance,explanation,exercise) VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(career_goal,name) DO UPDATE SET proficiency=excluded.proficiency,target=excluded.target,
+                importance=excluded.importance,explanation=excluded.explanation,exercise=excluded.exercise,updated_at=CURRENT_TIMESTAMP""",
+                (career_goal,clean_name,rating(proficiency),rating(target),importance,explanation,exercise))
+            self._write_log(con, f"Skill assessment updated | {career_goal} | {clean_name}")
+
+    def get_activities(self, career_goal: str | None = None) -> list[Activity]:
+        career_goal = career_goal or self.get_profile().career_goal
+        if not career_goal: return []
+        with self.connect() as con:
+            rows = con.execute("SELECT * FROM activities WHERE career_goal=? ORDER BY CASE stage WHEN 'Beginner' THEN 1 WHEN 'Intermediate' THEN 2 ELSE 3 END,sort_order,id", (career_goal,)).fetchall()
+        return [Activity(r["id"],r["stage"],r["title"],r["description"],json.loads(r["skills"]),r["duration"],r["difficulty"],r["outcome"],r["status"],r["rationale"],r["career_goal"],r["learning_objective"],r["notes"],r["sort_order"]) for r in rows]
+
+    def update_activity_status(self, activity_id: int, status: str) -> None:
+        if status not in {"Planned","In progress","Paused","Completed"}: raise ValueError("Unknown activity status")
+        with self.connect() as con:
+            con.execute("UPDATE activities SET status=? WHERE id=?", (status,activity_id))
+            row = con.execute("SELECT title FROM activities WHERE id=?", (activity_id,)).fetchone()
+            if row: self._write_log(con, f"Roadmap activity {status.lower()} | {row['title']}")
+
+    def add_activity(self, item: dict[str, Any]) -> int:
+        goal = item.get("career_goal") or self.get_profile().career_goal
+        with self.connect() as con:
+            order = con.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM activities WHERE career_goal=? AND stage=?", (goal,item["stage"])).fetchone()[0]
+            cur = con.execute("""INSERT INTO activities(stage,title,description,skills,duration,difficulty,outcome,status,rationale,career_goal,learning_objective,notes,sort_order)
+                VALUES(?,?,?,?,?,?,?,'Planned',?,?,?,?,?)""", (item["stage"],item["title"],item["description"],json.dumps(item.get("skills",[])),
+                item["duration"],item["difficulty"],item["outcome"],item.get("rationale",""),goal,item.get("learning_objective",""),item.get("notes",""),item.get("sort_order",order)))
+            self._write_log(con, f"Roadmap updated | {goal} | {item['title']}")
+            return int(cur.lastrowid)
+
+    def update_activity(self, activity_id: int, *, title: str, description: str, learning_objective: str,
+                        duration: str, outcome: str) -> None:
+        title = title.strip()
+        if not title:
+            raise ValueError("An activity title is required.")
+        with self.connect() as con:
+            con.execute("UPDATE activities SET title=?,description=?,learning_objective=?,duration=?,outcome=? WHERE id=?",
+                        (title,description.strip(),learning_objective.strip(),duration.strip(),outcome.strip(),activity_id))
+            self._write_log(con, f"Roadmap activity edited | {title}")
+
+    def update_activity_notes(self, activity_id: int, notes: str) -> None:
+        with self.connect() as con:
+            con.execute("UPDATE activities SET notes=? WHERE id=?", (notes.strip()[:4000],activity_id))
+
+    def move_activity(self, activity_id: int, direction: int) -> None:
+        if direction not in {-1, 1}:
+            raise ValueError("Move direction must be -1 or 1.")
+        with self.connect() as con:
+            current = con.execute("SELECT id,career_goal,stage,sort_order FROM activities WHERE id=?", (activity_id,)).fetchone()
+            if not current:
+                return
+            comparator = "<" if direction < 0 else ">"
+            ordering = "DESC" if direction < 0 else "ASC"
+            neighbor = con.execute(f"SELECT id,sort_order FROM activities WHERE career_goal=? AND stage=? AND sort_order {comparator} ? ORDER BY sort_order {ordering} LIMIT 1",
+                                   (current["career_goal"],current["stage"],current["sort_order"])).fetchone()
+            if not neighbor:
+                return
+            con.execute("UPDATE activities SET sort_order=-1 WHERE id=?", (current["id"],))
+            con.execute("UPDATE activities SET sort_order=? WHERE id=?", (current["sort_order"],neighbor["id"]))
+            con.execute("UPDATE activities SET sort_order=? WHERE id=?", (neighbor["sort_order"],current["id"]))
+
+    def clear_activities(self, career_goal: str | None = None) -> None:
+        goal = career_goal or self.get_profile().career_goal
+        with self.connect() as con:
+            con.execute("DELETE FROM activities WHERE career_goal=?", (goal,))
+            self._write_log(con, f"Roadmap replaced | {goal}")
+
+    def add_recommendation(self, career_goal: str, industry: str, kind: str, content: Any, source_mode: str = "LIVE GEMINI API") -> int:
+        with self.connect() as con:
+            cur = con.execute("INSERT INTO recommendations(career_goal,industry,kind,source_mode,content) VALUES(?,?,?,?,?)", (career_goal,industry,kind,source_mode,json.dumps(content,ensure_ascii=False)))
+            self._write_log(con, f"{kind.replace('_',' ').title()} saved | {career_goal}")
+            return int(cur.lastrowid)
+
+    def get_recommendations(self, career_goal: str | None = None, kind: str | None = None) -> list[dict[str, Any]]:
+        query, params = "SELECT * FROM recommendations WHERE 1=1", []
+        if career_goal is not None: query += " AND career_goal=?"; params.append(career_goal)
+        if kind is not None: query += " AND kind=?"; params.append(kind)
+        with self.connect() as con: rows = con.execute(query+" ORDER BY created_at DESC,id DESC",params).fetchall()
+        return [{"id":r["id"],"career_goal":r["career_goal"],"industry":r["industry"],"kind":r["kind"],"source_mode":r["source_mode"],"content":json.loads(r["content"]),"created_at":r["created_at"]} for r in rows]
+
+    def add_project(self, item: dict[str, Any]) -> int:
+        goal = item.get("category") or self.get_profile().career_goal
+        with self.connect() as con:
+            cur = con.execute("INSERT INTO projects(title,description,category,software,skills,status,is_demo,details) VALUES(?,?,?,?,?,'Saved',0,?)", (item["title"],item["description"],goal,item.get("software",""),json.dumps(item.get("skills",[])),json.dumps(item.get("details",{}))))
+            self._write_log(con, f"Project saved | {item['title']}")
+            return int(cur.lastrowid)
+
+    def get_projects(self, career_goal: str | None = None) -> list[Project]:
+        goal = career_goal or self.get_profile().career_goal
+        if not goal: return []
+        with self.connect() as con: rows = con.execute("SELECT * FROM projects WHERE category=? ORDER BY created_at DESC,id DESC", (goal,)).fetchall()
+        return [Project(r["id"],r["title"],r["description"],r["category"],r["software"],json.loads(r["skills"]),r["status"],json.loads(r["details"])) for r in rows]
+
+    def update_project_status(self, project_id: int, status: str) -> None:
+        if status not in {"Saved","In progress","Completed"}: raise ValueError("Unknown project status")
+        with self.connect() as con:
+            con.execute("UPDATE projects SET status=? WHERE id=?", (status,project_id))
+            row = con.execute("SELECT title FROM projects WHERE id=?", (project_id,)).fetchone()
+            if row: self._write_log(con, f"Project marked {status.lower()} | {row['title']}")
+
+    def add_review(self, project_name: str, image_path: str, report: dict[str, Any], career_goal: str | None = None) -> int:
+        goal = career_goal or self.get_profile().career_goal
+        with self.connect() as con:
+            cur = con.execute("INSERT INTO reviews(project_name,image_path,report,is_demo,career_goal) VALUES(?,?,?,0,?)", (project_name,image_path,json.dumps(report,ensure_ascii=False),goal))
+            self._write_log(con, f"Portfolio review saved | {project_name}")
+            return int(cur.lastrowid)
+
+    def get_reviews(self, career_goal: str | None = None) -> list[Review]:
+        goal = career_goal or self.get_profile().career_goal
+        if not goal: return []
+        with self.connect() as con: rows = con.execute("SELECT * FROM reviews WHERE career_goal=? ORDER BY created_at DESC,id DESC", (goal,)).fetchall()
+        return [Review(r["id"],r["project_name"],r["created_at"],json.loads(r["report"]),r["image_path"],r["career_goal"]) for r in rows]
+
+    def log(self, message: str) -> None:
+        with self.connect() as con: self._write_log(con,message)
+
+    def get_recent_activity(self, limit: int = 8) -> list[tuple[str,str]]:
+        with self.connect() as con: rows = con.execute("SELECT message,created_at FROM activity_log ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
+        return [(r["message"],r["created_at"]) for r in rows]
+
+    def analytics(self) -> dict[str, Any]:
+        goal = self.get_profile().career_goal
+        if not goal: return {"completed":0,"total":0,"active_projects":0,"completed_projects":0,"project_total":0,"review_count":0,"skills":[],"activities":[],"reviews":[]}
+        with self.connect() as con:
+            completed = con.execute("SELECT COUNT(*) FROM activities WHERE career_goal=? AND status='Completed'",(goal,)).fetchone()[0]
+            total = con.execute("SELECT COUNT(*) FROM activities WHERE career_goal=?",(goal,)).fetchone()[0]
+            active = con.execute("SELECT COUNT(*) FROM projects WHERE category=? AND status!='Completed'",(goal,)).fetchone()[0]
+            project_total = con.execute("SELECT COUNT(*) FROM projects WHERE category=?",(goal,)).fetchone()[0]
+            completed_projects = con.execute("SELECT COUNT(*) FROM projects WHERE category=? AND status='Completed'",(goal,)).fetchone()[0]
+            review_count = con.execute("SELECT COUNT(*) FROM reviews WHERE career_goal=?",(goal,)).fetchone()[0]
+        return {"completed":completed,"total":total,"active_projects":active,"completed_projects":completed_projects,"project_total":project_total,"review_count":review_count,"skills":self.get_skills(goal),"activities":self.get_activities(goal),"reviews":self.get_reviews(goal)}

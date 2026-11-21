@@ -1,6 +1,25 @@
+# Native desktop application
 PyQt6>=6.7
-google-genai>=2.0.0
 matplotlib>=3.8
 Pillow>=10.0
-python-dotenv>=1.0
 keyring>=25.0
+
+# Desktop-to-service HTTPS and configuration
+requests>=2.32
+python-dotenv>=1.0
+
+# FastAPI service, auth, persistence, and migrations
+fastapi>=0.115
+uvicorn[standard]>=0.34
+SQLAlchemy>=2.0
+alembic>=1.14
+PyJWT>=2.10
+pwdlib[argon2]>=0.2
+psycopg[binary]>=3.2
+
+# Server Gemini provider
+google-genai>=2.0.0
+
+# Automated testing
+httpx>=0.27
+pytest>=8.0

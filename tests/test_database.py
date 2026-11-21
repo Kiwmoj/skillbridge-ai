@@ -23,7 +23,11 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.get_projects(), [])
         self.assertEqual(db.get_reviews(), [])
 
-        db.save_profile("Riley", "Custom Materials Engineer", "College", "Beginner", ["Research", "CAD"], "Science")
+        db.save_profile("Riley", "Custom Materials Engineer", "College", "Beginner", ["Research", "CAD"], "Science",
+                        interests=["Materials", "Design"], age_range="18-24", institution="Community College",
+                        country="US", region="WA", career_interests=["Aerospace Engineer"],
+                        areas_to_improve=["CAD"], learning_preferences="Hands-on", weekly_availability="5 hours",
+                        short_term_goal="Learn CAD basics", long_term_goal="Design safe materials")
         self.assertEqual([s.name for s in db.get_skills()], ["CAD", "Research"])
         db.save_skill("CAD", 45, 80, "Essential", "Model components", "Build a simple part")
         activity_id = db.add_activity({"stage":"Beginner", "title":"Material comparison", "description":"Compare fictional samples", "learning_objective":"Practice evidence-based material selection", "skills":["Research"], "duration":"1 week", "difficulty":"Beginner", "outcome":"A comparison table", "career_goal":"Custom Materials Engineer"})
@@ -37,6 +41,9 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(reopened.has_profile())
         self.assertEqual(reopened.get_profile().education_level, "College")
         self.assertEqual(reopened.get_profile().existing_skills, ["Research", "CAD"])
+        self.assertEqual(reopened.get_profile().age_range, "18-24")
+        self.assertEqual(reopened.get_profile().career_interests, ["Aerospace Engineer"])
+        self.assertEqual(reopened.get_profile().long_term_goal, "Design safe materials")
         self.assertEqual(reopened.get_skills()[0].proficiency, 45)
         self.assertEqual(reopened.get_activities()[0].learning_objective, "Practice evidence-based material selection")
         self.assertEqual(reopened.get_activities()[0].status, "Completed")
@@ -63,6 +70,26 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(reopened.has_profile())
         self.assertEqual(reopened.get_skills(), [])
         self.assertEqual(reopened.get_recent_activity(), [])
+
+    def test_roadmap_activities_can_be_paused_edited_noted_and_reordered(self):
+        db = Database(self.path)
+        db.save_profile("Riley", "Mechanical Engineer", "College", "Beginner", [], "Technology")
+        first = {"stage":"Beginner", "title":"First", "description":"One", "learning_objective":"A",
+                 "skills":[], "duration":"1 week", "difficulty":"Beginner", "outcome":"Done"}
+        second = dict(first, title="Second")
+        first_id = db.add_activity(first)
+        second_id = db.add_activity(second)
+        db.update_activity_status(first_id, "Paused")
+        db.update_activity_notes(first_id, "Review the safety notes")
+        db.update_activity(first_id, title="Edited first", description="Updated", learning_objective="New objective",
+                           duration="2 weeks", outcome="A documented comparison")
+        db.move_activity(second_id, -1)
+        activities = db.get_activities()
+        self.assertEqual(activities[0].id, second_id)
+        edited = next(item for item in activities if item.id == first_id)
+        self.assertEqual(edited.status, "Paused")
+        self.assertEqual(edited.notes, "Review the safety notes")
+        self.assertEqual(edited.title, "Edited first")
 
 
 if __name__ == "__main__":

@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import shutil
 from functools import partial
 from pathlib import Path
 from datetime import datetime, timezone
 
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QFontDatabase, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFont, QFontDatabase, QPixmap
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QCompleter
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTextEdit,
+    QInputDialog, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -23,8 +26,9 @@ from components.sidebar import Sidebar
 from database.db_manager import Database
 from services.career_service import CareerService
 from services.career_catalog import CAREERS_BY_INDUSTRY, CAREER_NAMES, INDUSTRIES, infer_industry
-from services.gemini_credentials import CredentialStorageError, save_gemini_api_key
+from services.api_client import ApiClient, ApiError
 from services.gemini_service import GeminiService
+from services.session_store import SessionStore
 from services.portfolio_service import PortfolioService
 from services.roadmap_service import RoadmapService
 from workers.ai_worker import AIWorker
@@ -34,6 +38,7 @@ NAV = {
     "Overview": 0, "Career reality check": 1, "Skill gap": 2,
     "Portfolio review": 3, "Learning roadmap": 4, "Project studio": 5,
     "Career explorer": 6, "Progress analytics": 7, "My profile": 8,
+    "Opportunities & Colleges": 9,
 }
 
 QSS = """
@@ -148,8 +153,15 @@ class MainWindow(QMainWindow):
     def __init__(self, db: Database | None = None):
         super().__init__()
         register_ui_font()
+        self._db_injected = db is not None
         self.db = db or Database()
-        self.gemini = GeminiService()
+        self.api_client = ApiClient()
+        self.session_store = SessionStore()
+        saved_token, saved_user = self.session_store.load()
+        self.api_client.token = saved_token
+        if saved_token and saved_user and not self._db_injected:
+            self._bind_database_to_user(saved_user)
+        self.gemini = GeminiService(self.api_client)
         self.career_service = CareerService(self.gemini)
         self.portfolio_service = PortfolioService(self.gemini)
         self.roadmap_service = RoadmapService(self.gemini)
@@ -163,12 +175,12 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(QSS)
         self._build_shell()
         self._build_pages()
-        if self.db.has_profile():
-            self.navigate("Gemini setup" if not self.gemini.enabled else "Overview")
+        if self.gemini.enabled:
+            self.navigate("Overview" if self.db.has_profile() else "Student setup")
         else:
             self.sidebar.hide()
             self.profile_button.hide()
-            self.navigate("Student setup")
+            self.navigate("Service & account")
 
     def _build_shell(self):
         root = QWidget()
@@ -192,7 +204,7 @@ class MainWindow(QMainWindow):
         self.header_title.setObjectName("topTitle")
         top_box.addWidget(self.header_title)
         top_box.addStretch(1)
-        self.mode_label = badge("LIVE GEMINI API" if self.gemini.enabled else "GEMINI SETUP REQUIRED", "green" if self.gemini.enabled else "gold")
+        self.mode_label = badge("SKILLBRIDGE CONNECTED" if self.gemini.enabled else "SERVICE SIGN IN REQUIRED", "green" if self.gemini.enabled else "gold")
         top_box.addWidget(self.mode_label)
         self.status_label = QLabel("Student data is saved locally")
         self.status_label.setObjectName("statusText")
@@ -216,9 +228,10 @@ class MainWindow(QMainWindow):
             ("Learning roadmap", self._page_roadmap),
             ("Project studio", self._page_projects),
             ("Career explorer", self._page_explorer),
+            ("Opportunities & Colleges", self._page_opportunities),
             ("Progress analytics", self._page_analytics),
             ("My profile", self._page_profile),
-            ("Gemini setup", self._page_gemini_setup),
+            ("Service & account", self._page_gemini_setup),
             ("Student setup", self._page_student_setup),
         ]
         for name, builder in builders:
@@ -234,9 +247,9 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.pages[name])
         self.header_title.setText(name)
         self._refresh_dynamic(name)
-        if name == "Student setup":
+        if name in {"Student setup", "Service & account"}:
             self.sidebar.hide(); self.profile_button.hide()
-        elif name != "Gemini setup":
+        else:
             self.sidebar.show(); self.profile_button.show()
 
     def _refresh_dynamic(self, name):
@@ -251,6 +264,8 @@ class MainWindow(QMainWindow):
             self.portfolio_category.setText(self.db.get_profile().career_goal)
         elif name == "Progress analytics":
             self._refresh_analytics()
+        elif name == "Opportunities & Colleges":
+            self._load_saved_opportunities()
         elif name == "Skill gap":
             self._refresh_skill_chart()
         elif name == "My profile":
@@ -296,15 +311,190 @@ class MainWindow(QMainWindow):
     def _profile_payload(profile):
         return {"name":profile.name, "career_goal":profile.career_goal, "industry":profile.industry,
                 "education_level":profile.education_level, "experience":profile.experience,
-                "existing_skills":profile.existing_skills or [], "interests":profile.interests}
+                "existing_skills":profile.existing_skills or [], "interests":profile.interests,
+                "age_range":profile.age_range, "institution":profile.institution, "country":profile.country,
+                "region":profile.region, "career_interests":profile.career_interests or [],
+                "areas_to_improve":profile.areas_to_improve or [],
+                "learning_preferences":profile.learning_preferences, "weekly_availability":profile.weekly_availability,
+                "short_term_goal":profile.short_term_goal, "long_term_goal":profile.long_term_goal}
 
     def _latest_recommendation(self, kind: str) -> dict:
         items = self.db.get_recommendations(self.db.get_profile().career_goal, kind)
         return items[0]["content"] if items else {}
 
+    def _persist_remote_record(self, kind: str, key: str, payload: dict) -> None:
+        if not self.api_client.authenticated:
+            return
+        worker = AIWorker(self.api_client.save_record, kind, key, payload)
+        self._workers.add(worker)
+        worker.succeeded.connect(lambda _result: None)
+        worker.failed.connect(lambda error: self._notify(f"Saved locally · cloud sync unavailable: {error}"))
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        worker.start()
+
+    def _save_recommendation(self, career: str, industry: str, kind: str, content: dict,
+                             source_mode: str = "LIVE GEMINI API") -> int:
+        record_id = self.db.add_recommendation(career, industry, kind, content, source_mode)
+        self._persist_remote_record("assessment", str(record_id),
+                                    {"career_goal": career, "industry": industry, "kind": kind,
+                                     "source_mode": source_mode, "content": content})
+        return record_id
+
     def _set_source_mode(self, source_mode: str) -> None:
-        self.mode_label.setText("LIVE GEMINI API")
+        self.mode_label.setText("LIVE GEMINI RESPONSE" if "LIVE GEMINI" in source_mode else source_mode)
         self.status_label.setText(f"{source_mode} · saved on this device")
+
+    def _bind_database_to_user(self, user: dict) -> None:
+        """Give each service account its own local SQLite file."""
+        if self._db_injected:
+            return
+        user_id = str(user.get("id") or "").strip()
+        if not user_id:
+            return
+        data_root = self.db.path.parent
+        owner_path = data_root / "local_db_owner.json"
+        accounts = data_root / "accounts"
+        accounts.mkdir(parents=True, exist_ok=True)
+        owner = ""
+        try:
+            owner = str(json.loads(owner_path.read_text(encoding="utf-8")).get("user_id") or "")
+        except (OSError, ValueError, AttributeError):
+            pass
+        account_id = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:24]
+        account_path = accounts / f"{account_id}.sqlite3"
+        # If this installation already had private local work, attach it to only
+        # the first authenticated service account. Other accounts get an empty DB.
+        if not owner and self.db.path.exists() and not account_path.exists():
+            shutil.copy2(self.db.path, account_path)
+            try:
+                wal = Path(str(self.db.path) + "-wal")
+                if wal.exists():
+                    shutil.copy2(wal, Path(str(account_path) + "-wal"))
+            except OSError:
+                pass
+            owner_path.write_text(json.dumps({"user_id": user_id}), encoding="utf-8")
+        self.db = Database(account_path)
+
+    def _sync_profile_with_service(self, pull_if_empty: bool = False) -> None:
+        if not self.api_client.authenticated:
+            return
+        local_profile = self.db.get_profile()
+        try:
+            remote = self.api_client.get_profile()
+            if pull_if_empty and not self.db.has_profile() and remote.get("career_goal"):
+                self.db.save_profile(remote.get("name", "Student"), remote["career_goal"],
+                                     remote.get("education_level", ""), remote.get("experience", "Beginner"),
+                                     remote.get("existing_skills", []), remote.get("industry", "Other / custom"),
+                                     interests=remote.get("interests", []), age_range=remote.get("age_range", ""),
+                                     institution=remote.get("institution", ""), country=remote.get("country", ""),
+                                     region=remote.get("region", ""), career_interests=remote.get("career_interests", []),
+                                     areas_to_improve=remote.get("areas_to_improve", []),
+                                     learning_preferences=remote.get("learning_preferences", ""),
+                                     weekly_availability=remote.get("weekly_availability", ""),
+                                     short_term_goal=remote.get("short_term_goal", ""),
+                                     long_term_goal=remote.get("long_term_goal", ""))
+            elif self.db.has_profile():
+                self.api_client.save_profile(self._profile_payload(local_profile))
+        except ApiError as exc:
+            self.status_label.setText(f"Profile saved locally · service sync unavailable: {exc}")
+
+    def _accept_account_session(self, auth: dict) -> None:
+        self.api_client.token = auth["access_token"]
+        user = auth["user"]
+        self.session_store.save(self.api_client.token, user)
+        self._bind_database_to_user(user)
+        self._sync_profile_with_service(pull_if_empty=True)
+        self._update_gemini_auth_ui("Signed in. AI actions are sent to the service; Gemini must also be configured by the service owner.")
+        if self.db.has_profile():
+            self.sidebar.show(); self.profile_button.show()
+            self.profile_button.setText(self.db.get_profile().name)
+            self.navigate("Overview")
+        else:
+            self.sidebar.hide(); self.profile_button.hide()
+            self.navigate("Student setup")
+
+    def _connect_service(self):
+        try:
+            self.api_client.save_base_url(self.api_url_input.text())
+            state = self.api_client.health()
+        except ApiError as exc:
+            self.backend_status.setText(str(exc))
+            return
+        ai = "Gemini configured" if state.get("ai_configured") else "Gemini not configured by the service owner"
+        search = "live opportunity search configured" if state.get("live_search_configured") else "live opportunity search unavailable"
+        self.backend_status.setText(f"Service reachable · {ai} · {search}")
+
+    def _account_action(self, create: bool = False):
+        try:
+            if not self.api_client.configured:
+                self.api_client.save_base_url(self.api_url_input.text())
+            if create:
+                auth = self.api_client.register(self.account_email.text(), self.account_name.text(), self.account_password.text())
+            else:
+                auth = self.api_client.login(self.account_email.text(), self.account_password.text())
+        except ApiError as exc:
+            self.backend_status.setText(str(exc))
+            return
+        self.account_password.clear()
+        self._accept_account_session(auth)
+
+    def _request_password_reset(self):
+        try:
+            if not self.api_client.configured:
+                self.api_client.save_base_url(self.api_url_input.text())
+            self.api_client.request_password_reset(self.account_email.text())
+            self.backend_status.setText("If the account exists, the service sent a reset code to its email address.")
+        except ApiError as exc:
+            self.backend_status.setText(str(exc))
+
+    def _confirm_password_reset(self):
+        try:
+            if not self.api_client.configured:
+                self.api_client.save_base_url(self.api_url_input.text())
+            self.api_client.confirm_password_reset(self.reset_code.text(), self.new_password.text())
+            self.reset_code.clear(); self.new_password.clear()
+            self.backend_status.setText("Password updated. Sign in with your new password.")
+        except ApiError as exc:
+            self.backend_status.setText(str(exc))
+
+    def _sign_out(self):
+        try:
+            if self.api_client.authenticated:
+                self.api_client.logout()
+        except ApiError:
+            pass
+        self.api_client.token = ""
+        self.session_store.clear()
+        self._update_gemini_auth_ui("Signed out. Your saved data remains in this device's account-scoped SQLite database.")
+        self.sidebar.hide(); self.profile_button.hide()
+        self.navigate("Service & account")
+
+    def _delete_account(self):
+        if not self.api_client.authenticated:
+            return
+        confirmation = QMessageBox.question(self, "Delete SkillBridge account",
+            "Permanently delete this account and its server records, and remove its local account database? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.api_client.delete_account(self.account_email.text(), self.account_password.text())
+        except ApiError as exc:
+            self.backend_status.setText(str(exc))
+            return
+        self.account_password.clear()
+        if not self._db_injected:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    Path(str(self.db.path) + suffix).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.api_client.token = ""
+        self.session_store.clear()
+        self.sidebar.hide(); self.profile_button.hide()
+        self._update_gemini_auth_ui("Account deleted. Its server records and this device's account database were removed.")
+        self.navigate("Service & account")
 
     def _apply_career_selection(self, goal: str, industry: str = "") -> None:
         """Persist the selected career as the single source used by career workflows."""
@@ -315,7 +505,13 @@ class MainWindow(QMainWindow):
         if clean_goal != profile.career_goal or clean_industry != profile.industry:
             current_skills = list(dict.fromkeys((profile.existing_skills or []) + [skill.name for skill in self.db.get_skills(profile.career_goal)]))
             self.db.save_profile(profile.name, clean_goal, profile.education_level, profile.experience,
-                                 current_skills, industry=clean_industry, interests=profile.interests)
+                                 current_skills, industry=clean_industry, interests=profile.interests,
+                                 age_range=profile.age_range, institution=profile.institution, country=profile.country,
+                                 region=profile.region, career_interests=profile.career_interests or [],
+                                 areas_to_improve=profile.areas_to_improve or [], learning_preferences=profile.learning_preferences,
+                                 weekly_availability=profile.weekly_availability, short_term_goal=profile.short_term_goal,
+                                 long_term_goal=profile.long_term_goal)
+            self._sync_profile_with_service()
             if hasattr(self, "profile_goal"):
                 self.profile_goal.setCurrentText(clean_goal)
             if hasattr(self, "profile_industry"):
@@ -363,111 +559,142 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         layout.addWidget(heading("Set up your student profile", "title"), 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(heading("Your career and background guide every recommendation. You can enter any career.", "muted"), 0, Qt.AlignmentFlag.AlignHCenter)
-        card = self._card("About you", "Saved in this device’s SQLite database", accent=True)
+        card = self._card("About you", "Saved in your account profile and this device’s SQLite database", accent=True)
         form = QFormLayout(); form.setSpacing(14)
         self.setup_name = QLineEdit(); self.setup_name.setPlaceholderText("Your name")
+        self.setup_age = QLineEdit(); self.setup_age.setPlaceholderText("Age range, e.g. 16–18 (optional)")
         self.setup_education = QLineEdit(); self.setup_education.setPlaceholderText("For example, high school, college, or self-taught")
+        self.setup_institution = QLineEdit(); self.setup_institution.setPlaceholderText("School or institution (optional)")
+        self.setup_country = QLineEdit(); self.setup_country.setPlaceholderText("Country")
+        self.setup_region = QLineEdit(); self.setup_region.setPlaceholderText("Region or state (optional)")
         self.setup_career = self._career_picker(); self.setup_career.setPlaceholderText("Search or type any career")
         self.setup_industry = self._industry_picker()
         self.setup_experience = QComboBox(); self.setup_experience.addItems(["Beginner", "Intermediate", "Advanced"])
         self.setup_skills = QLineEdit(); self.setup_skills.setPlaceholderText("Comma-separated skills you already have")
-        form.addRow("Name", self.setup_name); form.addRow("Education", self.setup_education)
+        self.setup_interests = QLineEdit(); self.setup_interests.setPlaceholderText("Comma-separated interests")
+        self.setup_career_interests = QLineEdit(); self.setup_career_interests.setPlaceholderText("Other career interests (comma separated)")
+        self.setup_improvement = QLineEdit(); self.setup_improvement.setPlaceholderText("Skills or areas you want to improve")
+        self.setup_preferences = QLineEdit(); self.setup_preferences.setPlaceholderText("For example, visual lessons, reading, hands-on practice")
+        self.setup_availability = QLineEdit(); self.setup_availability.setPlaceholderText("Hours per week")
+        self.setup_short_goal = QLineEdit(); self.setup_short_goal.setPlaceholderText("Short-term learning goal")
+        self.setup_long_goal = QLineEdit(); self.setup_long_goal.setPlaceholderText("Long-term goal")
+        form.addRow("Name", self.setup_name); form.addRow("Age range", self.setup_age); form.addRow("Education", self.setup_education)
+        form.addRow("School / institution", self.setup_institution); form.addRow("Country", self.setup_country); form.addRow("Region", self.setup_region)
         form.addRow("Career goal", self.setup_career); form.addRow("Industry", self.setup_industry)
+        form.addRow("Other career interests", self.setup_career_interests); form.addRow("Interests", self.setup_interests)
         form.addRow("Experience level", self.setup_experience); form.addRow("Existing skills", self.setup_skills)
+        form.addRow("Areas to improve", self.setup_improvement); form.addRow("Learning preferences", self.setup_preferences)
+        form.addRow("Weekly availability", self.setup_availability); form.addRow("Short-term goal", self.setup_short_goal); form.addRow("Long-term goal", self.setup_long_goal)
         card.layout_box.addLayout(form)
         self.setup_save_button = make_button("Save profile and continue", primary=True)
         self.setup_save_button.clicked.connect(self._create_profile)
         card.layout_box.addWidget(self.setup_save_button, 0, Qt.AlignmentFlag.AlignRight)
         layout.addWidget(card)
-        layout.addWidget(heading("AI features require your own Gemini API key. You can add it after creating your profile.", "muted"), 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(heading("AI requests use the SkillBridge service after you sign in. Students never enter Gemini credentials.", "muted"), 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
         return page
 
     def _create_profile(self):
         try:
             skills = [value.strip() for value in self.setup_skills.text().split(",") if value.strip()]
+            interests = [value.strip() for value in self.setup_interests.text().split(",") if value.strip()]
+            career_interests = [value.strip() for value in self.setup_career_interests.text().split(",") if value.strip()]
+            areas = [value.strip() for value in self.setup_improvement.text().split(",") if value.strip()]
             self.db.save_profile(self.setup_name.text(), self.setup_career.currentText(), self.setup_education.text().strip(),
-                                 self.setup_experience.currentText(), skills, self.setup_industry.currentText())
+                                 self.setup_experience.currentText(), skills, self.setup_industry.currentText(), interests,
+                                 age_range=self.setup_age.text(), institution=self.setup_institution.text(),
+                                 country=self.setup_country.text(), region=self.setup_region.text(),
+                                 career_interests=career_interests, areas_to_improve=areas,
+                                 learning_preferences=self.setup_preferences.text(), weekly_availability=self.setup_availability.text(),
+                                 short_term_goal=self.setup_short_goal.text(), long_term_goal=self.setup_long_goal.text())
         except ValueError as exc:
             QMessageBox.warning(self, "Profile needs attention", str(exc)); return
         self.profile_button.setText(self.db.get_profile().name)
         self.sidebar.show(); self.profile_button.show()
-        self.navigate("Gemini setup" if not self.gemini.enabled else "Overview")
+        self._sync_profile_with_service()
+        self.navigate("Overview")
 
     def _page_gemini_setup(self):
         page, layout = make_page()
-        layout.addWidget(heading("Gemini API setup", "title"))
-        if self.gemini.enabled:
-            card = self._card("Gemini authentication", "AI features send requests to the live Gemini API")
-            card.layout_box.addWidget(badge("LIVE GEMINI API", "green"))
-            card.layout_box.addWidget(heading(f"Configured model: {self.gemini.model}"))
-        else:
-            card = self._card("Gemini authentication required", "AI features stay unavailable until this device has a credential", accent=True)
-            card.layout_box.addWidget(heading("Create a Gemini API key in Google AI Studio, then enter it once below. SkillBridge stores it in the system credential store and loads it automatically on future launches."))
-            card.layout_box.addWidget(heading("You can also configure GEMINI_API_KEY or GOOGLE_API_KEY in your environment or private project .env file."))
-            card.layout_box.addWidget(badge("GEMINI SETUP REQUIRED", "gold"))
-        self.gemini_auth_status = heading("", "muted")
+        layout.addWidget(heading("Service & account", "title"))
+        card = self._card("SkillBridge service", "The service owner manages Gemini and search credentials on the backend", accent=True)
+        card.layout_box.addWidget(heading("Students do not need a Gemini API key. Configure the HTTPS service URL, then sign in or create an account. For local development, http://127.0.0.1 is accepted."))
+        self.api_url_input = QLineEdit(self.api_client.base_url)
+        self.api_url_input.setPlaceholderText("https://your-skillbridge-service.example")
+        card.layout_box.addWidget(self.api_url_input)
+        connect_button = make_button("Connect to service", primary=True)
+        connect_button.clicked.connect(self._connect_service)
+        card.layout_box.addWidget(connect_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.backend_status = heading("No service connection has been checked.", "muted")
+        card.layout_box.addWidget(self.backend_status)
+        form = QFormLayout(); form.setSpacing(10)
+        self.account_name = QLineEdit(); self.account_name.setPlaceholderText("Display name (required for a new account)")
+        self.account_email = QLineEdit(); self.account_email.setPlaceholderText("Email address")
+        self.account_password = QLineEdit(); self.account_password.setPlaceholderText("Password · at least 10 characters for new accounts")
+        self.account_password.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Name", self.account_name); form.addRow("Email", self.account_email); form.addRow("Password", self.account_password)
+        card.layout_box.addLayout(form)
+        actions = QHBoxLayout()
+        login_button = make_button("Sign in", primary=True); login_button.clicked.connect(lambda: self._account_action(False))
+        register_button = make_button("Create account"); register_button.clicked.connect(lambda: self._account_action(True))
+        actions.addWidget(login_button); actions.addWidget(register_button); actions.addStretch(1)
+        card.layout_box.addLayout(actions)
+        reset_form = QFormLayout(); reset_form.setSpacing(8)
+        self.reset_code = QLineEdit(); self.reset_code.setPlaceholderText("Reset code from your email")
+        self.new_password = QLineEdit(); self.new_password.setPlaceholderText("New password · at least 10 characters")
+        self.new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        reset_form.addRow("Reset code", self.reset_code); reset_form.addRow("New password", self.new_password)
+        card.layout_box.addLayout(reset_form)
+        reset_actions = QHBoxLayout()
+        request_reset = make_button("Request password reset"); request_reset.clicked.connect(self._request_password_reset)
+        confirm_reset = make_button("Set new password"); confirm_reset.clicked.connect(self._confirm_password_reset)
+        reset_actions.addWidget(request_reset); reset_actions.addWidget(confirm_reset); reset_actions.addStretch(1)
+        card.layout_box.addLayout(reset_actions)
+        self.account_status = self.gemini_auth_status = heading("", "muted")
         card.layout_box.addWidget(self.gemini_auth_status)
-        self.gemini_key_input = QLineEdit()
-        self.gemini_key_input.setPlaceholderText("Gemini API key (hidden while typing)")
-        self.gemini_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.gemini_save_button = make_button("Save securely and test connection", primary=True)
-        self.gemini_save_button.clicked.connect(self._save_and_test_gemini)
-        self.gemini_test_button = make_button("Test Gemini connection", quiet=True)
+        self.gemini_test_button = make_button("Test live Gemini connection", quiet=True)
         self.gemini_test_button._prior_text = "Test Gemini connection"
         self.gemini_test_button.clicked.connect(self._test_gemini_connection)
-        card.layout_box.addWidget(self.gemini_key_input)
-        actions = QHBoxLayout()
-        actions.addWidget(self.gemini_save_button)
-        actions.addWidget(self.gemini_test_button)
-        actions.addStretch(1)
-        card.layout_box.addLayout(actions)
+        self.sign_out_button = make_button("Sign out", quiet=True)
+        self.sign_out_button.clicked.connect(self._sign_out)
+        self.delete_account_button = make_button("Delete account", quiet=True)
+        self.delete_account_button.clicked.connect(self._delete_account)
+        account_actions = QHBoxLayout()
+        account_actions.addWidget(self.gemini_test_button); account_actions.addWidget(self.sign_out_button)
+        account_actions.addWidget(self.delete_account_button); account_actions.addStretch(1)
+        card.layout_box.addLayout(account_actions)
         self.gemini_setup_card = card
         self._update_gemini_auth_ui()
         layout.addWidget(card)
-        layout.addWidget(heading("Career Reality Check, Skill Gap, Learning Roadmap, Career Explorer, Project Studio, and Portfolio Review share this authentication. Gemini errors are shown without exposing credentials.", "muted"))
+        layout.addWidget(heading("The career explorer, reality check, skill gap analysis, roadmap, project ideas, and portfolio review all use one authenticated server-side Gemini integration. No AI samples are shown when the service is unavailable.", "muted"))
         layout.addStretch(1)
         return page
 
     def _update_gemini_auth_ui(self, message: str = ""):
         enabled = self.gemini.enabled
         if hasattr(self, "mode_label"):
-            self.mode_label.setText("LIVE GEMINI API" if enabled else "GEMINI SETUP REQUIRED")
+            self.mode_label.setText("SERVICE ACCOUNT CONNECTED" if enabled else "SERVICE SIGN IN REQUIRED")
             self.mode_label.setObjectName("badge_green" if enabled else "badge_gold")
             self.mode_label.style().unpolish(self.mode_label)
             self.mode_label.style().polish(self.mode_label)
         if hasattr(self, "gemini_auth_status"):
             self.gemini_auth_status.setText(message or (
-                "A credential is loaded automatically from local configuration or the system credential store. The key is never shown or logged."
+                f"Signed in as {getattr(self, 'account_email', None).text() if hasattr(self, 'account_email') and self.api_client.authenticated else 'your SkillBridge account'}. The Gemini credential remains on the backend."
                 if enabled else
-                "No Gemini credential is configured on this device. Authentication is required before AI requests can run."
+                "Connect to a SkillBridge backend and sign in. The service owner must configure Gemini before real AI responses are available."
             ))
-            self.gemini_key_input.setVisible(not enabled)
-            self.gemini_save_button.setVisible(not enabled)
             self.gemini_test_button.setEnabled(enabled)
+            self.sign_out_button.setEnabled(enabled)
+            self.delete_account_button.setEnabled(enabled)
         for attribute in ("career_button", "skill_guidance_button", "portfolio_review_button", "adapt_button",
                           "roadmap_generate_button", "project_generate_button", "compare_button"):
             button = getattr(self, attribute, None)
             if button:
                 button.setEnabled(enabled)
                 if not enabled:
-                    button.setToolTip("Gemini authentication is required. Configure a local credential in Gemini Setup.")
+                    button.setToolTip("Sign in to the configured SkillBridge service to use Gemini features.")
                 else:
                     button.setToolTip("")
-
-    def _save_and_test_gemini(self):
-        try:
-            save_gemini_api_key(self.gemini_key_input.text())
-        except CredentialStorageError as exc:
-            QMessageBox.warning(self, "Could not save Gemini authentication", str(exc))
-            return
-        self.gemini_key_input.clear()
-        self.gemini.reload_credentials()
-        if not self.gemini.enabled:
-            self._update_gemini_auth_ui("The system credential store did not return the saved credential. Check local authentication configuration.")
-            return
-        self._update_gemini_auth_ui("Credential saved securely. Checking it with a real Gemini API request…")
-        self._test_gemini_connection()
 
     def _test_gemini_connection(self):
         self._start_ai(
@@ -588,7 +815,7 @@ class MainWindow(QMainWindow):
         self.career_report = report
         self._set_source_mode(report.get("source_mode", "LIVE GEMINI API"))
         profile = self.db.get_profile()
-        self.db.add_recommendation(profile.career_goal, profile.industry, "career_reality_check", report, report.get("source_mode", "Unknown"))
+        self._save_recommendation(profile.career_goal, profile.industry, "career_reality_check", report, report.get("source_mode", "Unknown"))
         clear_layout(self.career_result)
         overview = self._card("A practical view", report.get("overview", ""), accent=True)
         overview.layout_box.addWidget(badge(report.get("source_mode", "LIVE GEMINI API"), "green"))
@@ -679,6 +906,11 @@ class MainWindow(QMainWindow):
     def _save_skills(self):
         for name, (current, target, skill) in self.skill_inputs.items():
             self.db.save_skill(name, current.currentData(), target.currentData(), skill.importance, skill.explanation, skill.exercise)
+            career = self.db.get_profile().career_goal
+            self._persist_remote_record("assessment", f"skill:{career}:{name}", {
+                "career_goal":career, "skill":name, "proficiency":current.currentData(),
+                "target":target.currentData(), "importance":skill.importance,
+                "explanation":skill.explanation, "exercise":skill.exercise})
         self._refresh_skill_chart()
         self._notify("Skill assessments saved to this device")
         self._refresh_dashboard()
@@ -704,7 +936,7 @@ class MainWindow(QMainWindow):
     def _render_skill_guidance(self, report):
         self._set_source_mode(report.get("source_mode", "LIVE GEMINI API"))
         profile = self.db.get_profile()
-        self.db.add_recommendation(profile.career_goal, profile.industry, "skill_gap_analysis", report, report.get("source_mode", "Unknown"))
+        self._save_recommendation(profile.career_goal, profile.industry, "skill_gap_analysis", report, report.get("source_mode", "Unknown"))
         clear_layout(self.skill_guidance_layout)
         card = self._card(f"AI skill guidance · {profile.career_goal}", report.get("summary", ""), accent=True)
         card.layout_box.addWidget(badge(report.get("source_mode", "SKILL GUIDANCE"), "purple"))
@@ -791,7 +1023,9 @@ class MainWindow(QMainWindow):
                        partial(self._save_and_render_review, name, self.current_image), "Reviewing your project image…")
 
     def _save_and_render_review(self, name, path, report):
-        self.db.add_review(name, path, report, career_goal=self.db.get_profile().career_goal)
+        review_id = self.db.add_review(name, path, report, career_goal=self.db.get_profile().career_goal)
+        self._persist_remote_record("portfolio", str(review_id), {"project_name":name,
+            "career_goal":self.db.get_profile().career_goal, "report":report})
         clear_layout(self.portfolio_report_layout)
         self.portfolio_report_layout.addWidget(heading("YOUR EVALUATION", "eyebrow"))
         first = QHBoxLayout()
@@ -858,8 +1092,8 @@ class MainWindow(QMainWindow):
         clear_layout(self.roadmap_stage_layout)
         activities = self.db.get_activities()
         if hasattr(self, "roadmap_generate_button"):
-            self.roadmap_generate_button.setVisible(not activities)
-            self.roadmap_generate_button.setText(f"Generate {self.db.get_profile().career_goal} roadmap")
+            self.roadmap_generate_button.setVisible(True)
+            self.roadmap_generate_button.setText(("Regenerate " if activities else "Generate ") + f"{self.db.get_profile().career_goal} roadmap")
         complete = sum(a.status == "Completed" for a in activities)
         value = round(complete * 100 / len(activities)) if activities else 0
         self.roadmap_progress_label.setText(f"{value}%")
@@ -881,17 +1115,63 @@ class MainWindow(QMainWindow):
                 nested.layout_box.addLayout(meta)
                 nested.layout_box.addWidget(heading("Outcome: " + activity.outcome, "muted"))
                 if activity.rationale: nested.layout_box.addWidget(heading("Why this is here: " + activity.rationale, "muted"))
-                action = make_button("Mark complete" if activity.status != "Completed" else "Reopen activity", quiet=True)
-                action.clicked.connect(partial(self._toggle_activity, activity.id, activity.status))
-                nested.layout_box.addWidget(action, 0, Qt.AlignmentFlag.AlignRight)
+                if activity.notes:
+                    nested.layout_box.addWidget(heading("Your notes: " + activity.notes, "muted"))
+                controls = QHBoxLayout()
+                status = QComboBox(); status.addItems(["Planned", "In progress", "Paused", "Completed"])
+                status.setCurrentText(activity.status); status.currentTextChanged.connect(partial(self._set_activity_status, activity.id))
+                edit = make_button("Edit details", quiet=True); edit.clicked.connect(partial(self._edit_activity, activity))
+                notes = make_button("Edit notes", quiet=True); notes.clicked.connect(partial(self._edit_activity_notes, activity))
+                up = make_button("Move up", quiet=True); up.clicked.connect(partial(self._move_activity, activity.id, -1))
+                down = make_button("Move down", quiet=True); down.clicked.connect(partial(self._move_activity, activity.id, 1))
+                controls.addWidget(status); controls.addWidget(edit); controls.addWidget(notes)
+                controls.addWidget(up); controls.addWidget(down); controls.addStretch(1)
+                nested.layout_box.addLayout(controls)
                 stage_card.layout_box.addWidget(nested)
             self.roadmap_stage_layout.addWidget(stage_card)
 
-    def _toggle_activity(self, activity_id, status):
-        new_status = "Completed" if status != "Completed" else "Planned"
-        self.db.update_activity_status(activity_id, new_status)
+    def _set_activity_status(self, activity_id, status):
+        self.db.update_activity_status(activity_id, status)
+        self._sync_activity(activity_id)
         self._refresh_roadmap(); self._refresh_dashboard(); self._refresh_analytics()
-        self._notify(f"Activity marked {new_status.lower()}")
+        self._notify(f"Activity marked {status.lower()}")
+
+    def _edit_activity(self, activity):
+        dialog = QDialog(self); dialog.setWindowTitle("Edit roadmap activity"); dialog.resize(600, 500)
+        layout = QVBoxLayout(dialog); form = QFormLayout()
+        title = QLineEdit(activity.title); description = QTextEdit(); description.setPlainText(activity.description)
+        objective = QLineEdit(activity.learning_objective); duration = QLineEdit(activity.duration)
+        outcome = QTextEdit(); outcome.setPlainText(activity.outcome)
+        form.addRow("Title", title); form.addRow("Description", description); form.addRow("Learning objective", objective)
+        form.addRow("Duration", duration); form.addRow("Completion criteria", outcome); layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                self.db.update_activity(activity.id, title=title.text(), description=description.toPlainText(),
+                    learning_objective=objective.text(), duration=duration.text(), outcome=outcome.toPlainText())
+                self._sync_activity(activity.id)
+                self._refresh_roadmap()
+            except ValueError as exc:
+                QMessageBox.warning(self, "Activity needs attention", str(exc))
+
+    def _edit_activity_notes(self, activity):
+        notes, accepted = QInputDialog.getMultiLineText(self, "Roadmap notes", "Your private note for this activity:", activity.notes)
+        if accepted:
+            self.db.update_activity_notes(activity.id, notes)
+            self._sync_activity(activity.id)
+            self._refresh_roadmap()
+
+    def _move_activity(self, activity_id, direction):
+        self.db.move_activity(activity_id, direction)
+        for activity in self.db.get_activities():
+            self._sync_activity(activity.id)
+        self._refresh_roadmap()
+
+    def _sync_activity(self, activity_id):
+        activity = next((item for item in self.db.get_activities() if item.id == activity_id), None)
+        if activity:
+            self._persist_remote_record("activity", str(activity_id), activity.__dict__)
 
     def _start_roadmap_suggestions(self):
         profile = self.db.get_profile()
@@ -903,23 +1183,36 @@ class MainWindow(QMainWindow):
                        "Finding a next step that fits your progress…")
 
     def _start_roadmap_generation(self):
+        activities = [a.__dict__ for a in self.db.get_activities()]
+        if activities:
+            result = QMessageBox.question(self, "Replace current roadmap?",
+                "The new Gemini roadmap will replace the current activities and their completion states after it is generated. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if result != QMessageBox.StandardButton.Yes:
+                return
+        self._pending_roadmap_replace = bool(activities)
         profile = self.db.get_profile()
         skills = [s.__dict__ for s in self.db.get_skills()]
         career_analysis = self._latest_recommendation("career_reality_check")
         skill_gap = self._latest_recommendation("skill_gap_analysis")
         self._start_ai(self.roadmap_generate_button, self.roadmap_service.generate,
-                       (profile, skills, career_analysis, skill_gap), self._save_generated_roadmap,
+                       (profile, skills, career_analysis, skill_gap, activities), self._save_generated_roadmap,
                        f"Building a {profile.career_goal} learning roadmap…")
 
     def _save_generated_roadmap(self, activities):
         profile = self.db.get_profile()
+        if getattr(self, "_pending_roadmap_replace", False):
+            self.db.clear_activities(profile.career_goal)
+        self._pending_roadmap_replace = False
         source_mode = "LIVE GEMINI API"
         self._set_source_mode(source_mode)
-        self.db.add_recommendation(profile.career_goal, profile.industry, "learning_roadmap", activities,
+        self._save_recommendation(profile.career_goal, profile.industry, "learning_roadmap", activities,
                                    source_mode)
         for item in activities:
             item["career_goal"] = profile.career_goal
-            self.db.add_activity(item)
+            activity_id = self.db.add_activity(item)
+            self._sync_activity(activity_id)
         self._refresh_roadmap(); self._refresh_dashboard(); self._refresh_analytics()
         self._notify(f"{profile.career_goal} roadmap saved")
 
@@ -931,7 +1224,7 @@ class MainWindow(QMainWindow):
             item["career_goal"] = profile.career_goal
         source_mode = "LIVE GEMINI API"
         self._set_source_mode(source_mode)
-        self.db.add_recommendation(profile.career_goal, profile.industry, "roadmap_suggestions", suggestions, source_mode)
+        self._save_recommendation(profile.career_goal, profile.industry, "roadmap_suggestions", suggestions, source_mode)
         dialog = QDialog(self)
         dialog.setWindowTitle("Review roadmap suggestions")
         dialog.resize(600, 480)
@@ -1000,7 +1293,7 @@ class MainWindow(QMainWindow):
         source_mode = "LIVE GEMINI API"
         self._set_source_mode(source_mode)
         profile = self.db.get_profile()
-        self.db.add_recommendation(profile.career_goal, profile.industry, "project_ideas", projects,
+        self._save_recommendation(profile.career_goal, profile.industry, "project_ideas", projects,
                                    source_mode)
         clear_layout(self.generated_layout)
         for index, item in enumerate(projects):
@@ -1011,6 +1304,12 @@ class MainWindow(QMainWindow):
             card.layout_box.addWidget(heading(item.get("description", "")))
             card.layout_box.addWidget(heading("Problem to explore: " + item.get("problem", ""), "muted"))
             card.layout_box.addWidget(heading("Skills: " + ", ".join(item.get("skills",[])), "muted"))
+            if item.get("learning_objectives"):
+                card.layout_box.addWidget(heading("Learning objectives: " + "; ".join(item["learning_objectives"]), "muted"))
+            if item.get("materials"):
+                card.layout_box.addWidget(heading("Materials: " + "; ".join(item["materials"]), "muted"))
+            if item.get("stages"):
+                card.layout_box.addWidget(heading("Development stages: " + " → ".join(item["stages"]), "muted"))
             card.layout_box.addWidget(heading("Recommended software: " + item.get("software", ""), "muted"))
             card.layout_box.addWidget(heading("Expected deliverable: " + item.get("deliverable", "")))
             card.layout_box.addWidget(heading("Portfolio value: " + item.get("portfolio_value", ""), "muted"))
@@ -1026,8 +1325,9 @@ class MainWindow(QMainWindow):
     def _save_project(self, index):
         if index >= len(self.generated_projects): return
         item = self.generated_projects[index]
-        self.db.add_project({"title":item["title"],"description":item["description"],"category":self.db.get_profile().career_goal,
+        project_id = self.db.add_project({"title":item["title"],"description":item["description"],"category":self.db.get_profile().career_goal,
                              "software":item.get("software",""),"skills":item.get("skills",[]),"details":item})
+        self._persist_remote_record("project", str(project_id), {**item, "status":"Saved", "career_goal":self.db.get_profile().career_goal})
         self._refresh_saved_projects(); self._refresh_dashboard()
         self._notify(f"Saved project · {item['title']}")
 
@@ -1052,7 +1352,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(heading(item.get("title", "Portfolio project"), "title"))
         layout.addWidget(badge(f"{item.get('difficulty','')} · {item.get('duration','')}", "purple"))
         for label, text in [("Concept",item.get("concept","")),("Description",item.get("description","")),("Problem to explore",item.get("problem","")),
-                            ("Required skills",", ".join(item.get("skills",[]))), ("Recommended software",item.get("software","")),
+                            ("Required skills",", ".join(item.get("skills",[]))),
+                            ("Learning objectives", "; ".join(item.get("learning_objectives", []))),
+                            ("Materials", "; ".join(item.get("materials", []))),
+                            ("Development stages", " → ".join(item.get("stages", []))),
+                            ("Recommended software",item.get("software","")),
                             ("Expected deliverable",item.get("deliverable","")), ("Portfolio value",item.get("portfolio_value",""))]:
             if text:
                 layout.addWidget(heading(label.upper(), "eyebrow")); layout.addWidget(heading(text))
@@ -1067,6 +1371,9 @@ class MainWindow(QMainWindow):
 
     def _update_project_status(self, project_id, status):
         self.db.update_project_status(project_id, status)
+        project = next((item for item in self.db.get_projects() if item.id == project_id), None)
+        if project:
+            self._persist_remote_record("project", str(project_id), project.__dict__)
         self._refresh_saved_projects(); self._refresh_dashboard(); self._refresh_analytics()
         self._notify(f"Project marked {status.lower()}")
 
@@ -1104,7 +1411,7 @@ class MainWindow(QMainWindow):
     def _render_career_compare(self, result):
         self._set_source_mode(result.get("mode", "LIVE GEMINI API"))
         profile = self.db.get_profile()
-        self.db.add_recommendation(profile.career_goal, profile.industry, "career_comparison", result,
+        self._save_recommendation(profile.career_goal, profile.industry, "career_comparison", result,
                                    result.get("mode", "GEMINI RESPONSE"))
         clear_layout(self.compare_result_layout)
         row = QHBoxLayout()
@@ -1127,6 +1434,144 @@ class MainWindow(QMainWindow):
         note.layout_box.addWidget(heading(result.get("mode", "General career guidance. Verify details with current sources.")))
         self.compare_result_layout.addWidget(note)
         self._notify("Career comparison ready")
+
+    def _page_opportunities(self):
+        page, layout = make_page()
+        layout.addWidget(heading("Opportunities & Colleges", "title"))
+        layout.addWidget(heading("Search live web results for programs, internships, events, competitions, and research. Dates and eligibility remain unverified until you check the linked source.", "muted"))
+        search = self._card("Find opportunities", "Results come from a live search provider configured by the service owner.")
+        form = QFormLayout(); form.setSpacing(10)
+        self.opportunity_query = QLineEdit(); self.opportunity_query.setPlaceholderText("For example, summer engineering programs")
+        self.opportunity_career = QLineEdit(self.db.get_profile().career_goal if self.db.has_profile() else "")
+        self.opportunity_category = QComboBox(); self.opportunity_category.addItem("Any opportunity", "other")
+        for label, value in [("College / university", "college"), ("Event / competition", "event"),
+                             ("Internship", "internship"), ("Summer program", "summer_program"), ("Research", "research")]:
+            self.opportunity_category.addItem(label, value)
+        self.opportunity_location = QLineEdit(); self.opportunity_location.setPlaceholderText("City, region, or country (optional)")
+        self.opportunity_education = QLineEdit(self.db.get_profile().education_level if self.db.has_profile() else "")
+        form.addRow("Search", self.opportunity_query); form.addRow("Career", self.opportunity_career)
+        form.addRow("Category", self.opportunity_category); form.addRow("Location", self.opportunity_location)
+        form.addRow("Education level", self.opportunity_education)
+        search.layout_box.addLayout(form)
+        self.opportunity_search_button = make_button("Search live results", primary=True)
+        self.opportunity_search_button._prior_text = "Search live results"
+        self.opportunity_search_button.clicked.connect(self._search_opportunities)
+        search.layout_box.addWidget(self.opportunity_search_button, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(search)
+        self.opportunity_results = QVBoxLayout(); self.opportunity_results.setSpacing(12)
+        layout.addLayout(self.opportunity_results)
+        saved = self._card("Saved opportunities", "Track opportunities you want to follow.")
+        self.saved_opportunities_layout = QVBoxLayout(); self.saved_opportunities_layout.setSpacing(10)
+        saved.layout_box.addLayout(self.saved_opportunities_layout)
+        layout.addWidget(saved)
+        layout.addStretch(1)
+        return page
+
+    def _run_service_operation(self, button, operation, args, kwargs, callback, label):
+        if not self.api_client.authenticated:
+            self.navigate("Service & account")
+            return
+        prior = getattr(button, "_prior_text", button.text())
+        button._prior_text = prior
+        button.setEnabled(False); button.setText("Working…")
+        self._notify(label)
+        worker = AIWorker(operation, *args, **kwargs)
+        self._workers.add(worker)
+        def success(result):
+            button.setEnabled(True); button.setText(prior)
+            callback(result)
+        def failure(error):
+            button.setEnabled(True); button.setText(prior)
+            QMessageBox.warning(self, "SkillBridge service request failed", error)
+            self._notify("Service request failed")
+        worker.succeeded.connect(success); worker.failed.connect(failure)
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        worker.start()
+
+    def _search_opportunities(self):
+        query = self.opportunity_query.text().strip()
+        if len(query) < 2:
+            QMessageBox.information(self, "Add a search term", "Enter at least two characters to search.")
+            return
+        filters = {"query": query, "career": self.opportunity_career.text().strip(),
+                   "category": self.opportunity_category.currentData(),
+                   "location": self.opportunity_location.text().strip(),
+                   "education_level": self.opportunity_education.text().strip(), "limit": 10}
+        self._run_service_operation(self.opportunity_search_button, self.api_client.search_opportunities,
+                                    (), filters, self._render_opportunity_results, "Searching live opportunity sources…")
+
+    def _render_opportunity_results(self, response):
+        clear_layout(self.opportunity_results)
+        results = response.get("results", [])
+        if not results:
+            self.opportunity_results.addWidget(heading("No live results were returned. Try different search terms.", "muted"))
+            return
+        for item in results:
+            card = self._card(item.get("title", "Opportunity"), item.get("source_name", "Live search result"), accent=True)
+            card.layout_box.addWidget(heading(item.get("snippet", "No summary was supplied by the source.")))
+            card.layout_box.addWidget(heading(f"Location: {item.get('location', 'Not listed')} · Deadline: {item.get('deadline', 'Not verified')}", "muted"))
+            card.layout_box.addWidget(heading(item.get("verification", "Details are not independently verified; check the source."), "muted"))
+            row = QHBoxLayout()
+            open_button = make_button("Open source", quiet=True)
+            open_button.clicked.connect(lambda _checked=False, url=item.get("source_url", ""): QDesktopServices.openUrl(QUrl(url)))
+            save_button = make_button("Save opportunity", primary=True)
+            save_button.clicked.connect(lambda _checked=False, opportunity=item, button=save_button: self._save_opportunity(opportunity, button))
+            row.addWidget(open_button); row.addWidget(save_button); row.addStretch(1)
+            card.layout_box.addLayout(row)
+            self.opportunity_results.addWidget(card)
+
+    def _save_opportunity(self, item, button):
+        button.setEnabled(False)
+        try:
+            self.api_client.save_opportunity(item)
+            self._load_saved_opportunities()
+            self._notify("Opportunity saved to your account")
+        except ApiError as exc:
+            button.setEnabled(True)
+            QMessageBox.warning(self, "Could not save opportunity", str(exc))
+
+    def _load_saved_opportunities(self):
+        if not hasattr(self, "saved_opportunities_layout") or not self.api_client.authenticated:
+            return
+        self._run_service_operation(None if False else self.opportunity_search_button,
+                                    self.api_client.saved_opportunities, (), {},
+                                    self._render_saved_opportunities, "Loading your saved opportunities…")
+
+    def _render_saved_opportunities(self, results):
+        clear_layout(self.saved_opportunities_layout)
+        if not results:
+            self.saved_opportunities_layout.addWidget(heading("You have not saved any opportunities yet.", "muted"))
+            return
+        for item in results:
+            row = QHBoxLayout()
+            row.addWidget(badge(item.get("application_status", "Saved"), "blue"))
+            row.addWidget(heading(item.get("title", "Opportunity")))
+            row.addWidget(heading(item.get("deadline") or "Deadline not verified", "muted"))
+            open_button = make_button("Open source", quiet=True)
+            open_button.clicked.connect(lambda _checked=False, url=item.get("source_url", ""): QDesktopServices.openUrl(QUrl(url)))
+            row.addWidget(open_button)
+            status = QComboBox(); status.addItems(["Saved", "Considering", "Applied", "Not pursuing"])
+            status.setCurrentText(item.get("application_status", "Saved"))
+            status.currentTextChanged.connect(lambda value, oid=item["id"]: self._update_opportunity_status(oid, value))
+            row.addWidget(status)
+            remove = make_button("Remove", quiet=True)
+            remove.clicked.connect(lambda _checked=False, oid=item["id"]: self._delete_opportunity(oid))
+            row.addWidget(remove); row.addStretch(1)
+            self.saved_opportunities_layout.addLayout(row)
+            self.saved_opportunities_layout.addWidget(heading(item.get("source_name", "Source") + " · Information not independently verified", "muted"))
+
+    def _update_opportunity_status(self, opportunity_id, value):
+        try:
+            self.api_client.update_saved_opportunity(opportunity_id, value)
+        except ApiError as exc:
+            QMessageBox.warning(self, "Could not update application status", str(exc))
+
+    def _delete_opportunity(self, opportunity_id):
+        try:
+            self.api_client.delete_saved_opportunity(opportunity_id)
+            self._load_saved_opportunities()
+        except ApiError as exc:
+            QMessageBox.warning(self, "Could not remove opportunity", str(exc))
 
     def _page_analytics(self):
         page, layout = make_page()
@@ -1172,7 +1617,7 @@ class MainWindow(QMainWindow):
         page, layout = make_page()
         layout.addWidget(heading("My profile", "title"))
         layout.addWidget(heading("Your selected career is shared across the career check, skill gap, roadmap, project studio, and explorer.", "muted"))
-        card = self._card("Student profile", "Stored locally on this device")
+        card = self._card("Student profile", "Saved to your account and this device")
         form = QFormLayout(); form.setSpacing(14)
         self.profile_name = QLineEdit()
         profile = self.db.get_profile()
@@ -1180,11 +1625,28 @@ class MainWindow(QMainWindow):
         self.profile_industry = self._industry_picker(profile.industry)
         self.profile_experience = QComboBox(); self.profile_experience.addItems(["Beginner","Intermediate","Advanced"])
         self.profile_interests = QLineEdit()
+        self.profile_age = QLineEdit()
+        self.profile_institution = QLineEdit()
+        self.profile_country = QLineEdit()
+        self.profile_region = QLineEdit()
+        self.profile_career_interests = QLineEdit()
+        self.profile_areas = QLineEdit()
+        self.profile_preferences = QLineEdit()
+        self.profile_availability = QLineEdit()
+        self.profile_short_goal = QLineEdit()
+        self.profile_long_goal = QLineEdit()
         self.profile_education = QLineEdit()
         self.profile_existing_skills = QLineEdit()
-        form.addRow("Name", self.profile_name); form.addRow("Career goal · searchable or custom", self.profile_goal); form.addRow("Industry · for custom careers", self.profile_industry); form.addRow("Learning stage", self.profile_experience); form.addRow("Interests · comma separated", self.profile_interests)
-        form.addRow("Education", self.profile_education)
+        form.addRow("Name", self.profile_name); form.addRow("Age range", self.profile_age)
+        form.addRow("Career goal · searchable or custom", self.profile_goal); form.addRow("Industry · for custom careers", self.profile_industry)
+        form.addRow("Other career interests · comma separated", self.profile_career_interests)
+        form.addRow("Education level", self.profile_education); form.addRow("School / institution", self.profile_institution)
+        form.addRow("Country", self.profile_country); form.addRow("Region / state", self.profile_region)
+        form.addRow("Experience level", self.profile_experience); form.addRow("Interests · comma separated", self.profile_interests)
         form.addRow("Existing skills · comma separated", self.profile_existing_skills)
+        form.addRow("Areas to improve · comma separated", self.profile_areas)
+        form.addRow("Learning preferences", self.profile_preferences); form.addRow("Weekly availability", self.profile_availability)
+        form.addRow("Short-term goal", self.profile_short_goal); form.addRow("Long-term goal", self.profile_long_goal)
         card.layout_box.addLayout(form)
         self.profile_save_button = make_button("Save profile", primary=True)
         self.profile_save_button.clicked.connect(self._save_profile)
@@ -1202,6 +1664,13 @@ class MainWindow(QMainWindow):
         self.profile_industry.setCurrentText(profile.industry)
         self.profile_experience.setCurrentText(profile.experience if profile.experience in ["Beginner","Intermediate","Advanced"] else "Beginner")
         self.profile_interests.setText(", ".join(profile.interests))
+        self.profile_age.setText(profile.age_range); self.profile_institution.setText(profile.institution)
+        self.profile_country.setText(profile.country); self.profile_region.setText(profile.region)
+        self.profile_career_interests.setText(", ".join(profile.career_interests or []))
+        self.profile_areas.setText(", ".join(profile.areas_to_improve or []))
+        self.profile_preferences.setText(profile.learning_preferences)
+        self.profile_availability.setText(profile.weekly_availability)
+        self.profile_short_goal.setText(profile.short_term_goal); self.profile_long_goal.setText(profile.long_term_goal)
         self.profile_education.setText(profile.education_level)
         self.profile_existing_skills.setText(", ".join(profile.existing_skills or []))
         if hasattr(self, "career_goal_input"):
@@ -1216,11 +1685,19 @@ class MainWindow(QMainWindow):
         goal = self.profile_goal.currentText().strip()
         industry = infer_industry(goal, self.profile_industry.currentText())
         skills = [item.strip() for item in self.profile_existing_skills.text().split(",") if item.strip()]
+        career_interests = [item.strip() for item in self.profile_career_interests.text().split(",") if item.strip()]
+        areas = [item.strip() for item in self.profile_areas.text().split(",") if item.strip()]
         try:
             self.db.save_profile(self.profile_name.text(), goal, self.profile_education.text().strip(),
-                                 self.profile_experience.currentText(), skills, industry=industry, interests=interests)
+                                 self.profile_experience.currentText(), skills, industry=industry, interests=interests,
+                                 age_range=self.profile_age.text(), institution=self.profile_institution.text(),
+                                 country=self.profile_country.text(), region=self.profile_region.text(),
+                                 career_interests=career_interests, areas_to_improve=areas,
+                                 learning_preferences=self.profile_preferences.text(), weekly_availability=self.profile_availability.text(),
+                                 short_term_goal=self.profile_short_goal.text(), long_term_goal=self.profile_long_goal.text())
         except ValueError as exc:
             QMessageBox.warning(self, "Profile needs attention", str(exc)); return
+        self._sync_profile_with_service()
         self._load_profile_fields()
         if hasattr(self, "career_goal_input"):
             self.career_goal_input.setCurrentText(goal); self.career_industry.setCurrentText(industry)
@@ -1233,7 +1710,7 @@ class MainWindow(QMainWindow):
 
     def _start_ai(self, button, operation, args, callback, message, on_failure=None):
         if not self.gemini.enabled:
-            self.navigate("Gemini setup")
+            self.navigate("Service & account")
             return
         if button:
             button.setEnabled(False)

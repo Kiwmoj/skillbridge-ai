@@ -49,9 +49,10 @@ class Sidebar(QFrame):
         ("Learning roadmap", "roadmap"),
         ("Project studio", "projects"),
         ("Career explorer", "explorer"),
+        ("Opportunities & Colleges", "career"),
         ("Progress analytics", "analytics"),
         ("My profile", "profile"),
-        ("Gemini setup", "profile"),
+        ("Service & account", "profile"),
     ]
 
     def __init__(self, parent=None):
